@@ -26,6 +26,10 @@ void print_usage() {
     std::cerr << "  read-tree <tree-ish> Read tree information into the index" << std::endl; // Add flags later
     std::cerr << "  merge <branch>    Join two or more development histories together" << std::endl;
     // Add cat-file, hash-object back if needed for low-level operations
+    std::cerr << "  cat-file (-t | -s | -p) <object>" << std::endl;
+    std::cerr << "                    Provide content or type and size information for repository objects" << std::endl;
+    std::cerr << "  hash-object [-w] [-t <type>] <file>" << std::endl;
+    std::cerr << "                    Compute object ID and optionally create an object from a file" << std::endl;
 }
 
 std::vector<std::string> collect_args(int start_index, int argc, char* argv[]) {
@@ -119,6 +123,36 @@ int main(int argc, char* argv[]) {
                 std::cerr << "Usage: mygit merge <branch>" << std::endl; return 1;
             }
             return handle_merge(argv[2]);
+        } else if (command == "cat-file") {
+            if (argc != 4) {
+                std::cerr << "Usage: mygit cat-file (-t | -s | -p) <object>" << std::endl;
+                return 1;
+            }
+            std::string operation = argv[2];
+            std::string sha1_prefix = argv[3];
+            // Validation happens inside handle_cat_file now
+            return handle_cat_file(operation, sha1_prefix);
+
+        } else if (command == "hash-object") {
+            bool write_mode = false;
+            std::string type = "blob"; // Default type
+            std::string filename;
+
+            for (int i = 2; i < argc; ++i) {
+                std::string arg = argv[i];
+                if (arg == "-w") {
+                    write_mode = true;
+                } else if (arg == "-t") {
+                    if (i + 1 < argc) { type = argv[++i]; }
+                    else { /* Error: -t requires arg */ return 1; }
+                } else if (filename.empty()) { filename = arg; }
+                else { /* Error: too many args */ return 1; }
+            }
+
+            if (filename.empty()) { /* Error: Missing filename */ return 1; }
+
+            return handle_hash_object(filename, type, write_mode);
+
         } else {
             std::cerr << "mygit: '" << command << "' is not a mygit command. See 'mygit --help' (or just 'mygit')." << std::endl;
             print_usage();

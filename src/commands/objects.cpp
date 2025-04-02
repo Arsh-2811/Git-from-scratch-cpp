@@ -13,8 +13,8 @@
 #include <openssl/sha.h>
 
 // std::string find_object(const std::string& sha1_prefix);
-std::string get_object_path(const std::string& sha1);
-void ensure_object_directory_exists(const std::string& sha1);
+// std::string get_object_path(const std::string& sha1);
+// void ensure_object_directory_exists(const std::string& sha1);
 
 std::string get_object_path(const std::string& sha1) {
     if (sha1.length() != 40) {

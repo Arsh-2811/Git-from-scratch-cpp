@@ -46,6 +46,8 @@ struct ParsedObject {
 };
 
 std::string find_object(const std::string& sha1_prefix);
+std::string get_object_path(const std::string& sha1);
+void ensure_object_directory_exists(const std::string& sha1);
 
 void write_object(const std::string& sha1, const std::string& object_type, const std::string& content);
 void write_object(const std::string& sha1, const std::vector<unsigned char>& compressed_data);
