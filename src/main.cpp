@@ -1,0 +1,134 @@
+#include <iostream>
+#include <string>
+#include <vector>
+
+#include "headers/commands.h"
+#include "headers/utils.h"
+
+void print_usage() {
+    std::cerr << "Usage: mygit <command> [<args>...]" << std::endl;
+    std::cerr << std::endl;
+    std::cerr << "Available commands:" << std::endl;
+    std::cerr << "  init              Create an empty Git repository or reinitialize an existing one" << std::endl;
+    std::cerr << "  add <file>...     Add file contents to the index" << std::endl;
+    std::cerr << "  rm [--cached] <file>..." << std::endl;
+    std::cerr << "                    Remove files from the working tree and from the index" << std::endl;
+    std::cerr << "  commit -m <msg>   Record changes to the repository" << std::endl;
+    std::cerr << "  status            Show the working tree status" << std::endl;
+    std::cerr << "  log [--graph]     Show commit logs" << std::endl;
+    std::cerr << "  branch            List, create, or delete branches" << std::endl;
+    std::cerr << "  branch <name> [<start>] Create a new branch" << std::endl;
+    // std::cerr << "  branch -d <name>  Delete a branch" << std::endl; // Add delete later
+    std::cerr << "  tag               List tags" << std::endl;
+    std::cerr << "  tag [-a [-m <msg>]] <name> [<obj>]" << std::endl;
+    std::cerr << "                    Create a tag object" << std::endl;
+    std::cerr << "  write-tree        Create a tree object from the current index" << std::endl;
+    std::cerr << "  read-tree <tree-ish> Read tree information into the index" << std::endl; // Add flags later
+    std::cerr << "  merge <branch>    Join two or more development histories together" << std::endl;
+    // Add cat-file, hash-object back if needed for low-level operations
+}
+
+std::vector<std::string> collect_args(int start_index, int argc, char* argv[]) {
+    std::vector<std::string> args;
+    for (int i = start_index; i < argc; ++i) {
+        args.push_back(argv[i]);
+    }
+    return args;
+}
+
+int main(int argc, char* argv[]) {
+    if (argc < 2) {
+        print_usage();
+        return 1;
+    }
+
+    std::string command = argv[1];
+
+    if (command != "init" && !fs::exists(GIT_DIR)) {
+        std::cerr << "fatal: not a git repository (or any of the parent directories): " << GIT_DIR << std::endl;
+        return 1;
+    }
+
+    try {
+        if (command == "init") {
+            if (argc != 2) {
+                std::cerr << "Usage: mygit init" << std::endl; return 1;
+            }
+            return handle_init();
+        }
+        else if (command == "add") {
+            if (argc < 3) {
+                std::cerr << "Usage: mygit add <file>..." << std::endl; return 1;
+            }
+            return handle_add(collect_args(2, argc, argv));
+        }
+        else if (command == "rm") {
+            bool cached = false;
+            std::vector<std::string> files;
+            for (int i = 2; i < argc; ++i) {
+                if (std::string(argv[i]) == "--cached") {
+                    cached = true;
+                } else {
+                    files.push_back(argv[i]);
+                }
+            }
+            if (files.empty()) {
+                std::cerr << "Usage: mygit rm [--cached] <file>..." << std::endl; return 1;
+            }
+            return handle_rm(files, cached);
+        } else if (command == "commit") {
+            std::string message = "";
+            if (argc == 4 && std::string(argv[2]) == "-m") {
+                message = argv[3];
+            } else {
+                std::cerr << "Usage: mygit commit -m <message>" << std::endl;
+                std::cerr << "(Editor support not implemented)" << std::endl;
+                return 1;
+            }
+            return handle_commit(message);
+        } else if (command == "status") {
+            if (argc != 2) {
+                std::cerr << "Usage: mygit status" << std::endl; return 1;
+            }
+            return handle_status();
+        }
+        else if (command == "log") {
+            bool graph = false;
+            if (argc == 3 && std::string(argv[2]) == "--graph") {
+                graph = true;
+            } else if (argc != 2) {
+                std::cerr << "Usage: mygit log [--graph]" << std::endl; return 1;
+            }
+            return handle_log(graph);
+        } else if (command == "branch") {
+            return handle_branch(collect_args(2, argc, argv));
+        } else if (command == "tag") {
+            return handle_tag(collect_args(2, argc, argv));
+        } else if (command == "write-tree") {
+            if (argc != 2) {
+                std::cerr << "Usage: mygit write-tree" << std::endl; return 1;
+            }
+            return handle_write_tree();
+        } else if (command == "read-tree") {
+            if (argc != 3) {
+                std::cerr << "Usage: mygit read-tree <tree-ish>" << std::endl; return 1;
+            }
+            return handle_read_tree(argv[2], false, false);
+        } else if (command == "merge") {
+            if (argc != 3) {
+                std::cerr << "Usage: mygit merge <branch>" << std::endl; return 1;
+            }
+            return handle_merge(argv[2]);
+        } else {
+            std::cerr << "mygit: '" << command << "' is not a mygit command. See 'mygit --help' (or just 'mygit')." << std::endl;
+            print_usage();
+            return 1;
+        }
+
+    } catch (const std::exception& e) {
+        std::cerr << "Fatal error: " << e.what() << std::endl;
+        return 1;
+    }
+
+    return 0;
+}
