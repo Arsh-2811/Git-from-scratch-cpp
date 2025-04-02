@@ -95,15 +95,33 @@ void write_object(const std::string& sha1, const std::string& object_type, const
 }
 
 std::string hash_and_write_object(const std::string& type, const std::string& content) {
-    std::string object_data = type + " " + std::to_string(content.size()) + '\0' + content;
-    std::string sha1 = compute_sha1(object_data);
-    std::string path = get_object_path(sha1);
+    // 1. Calculate SHA of the raw content
+    std::string content_sha1 = compute_sha1(content);
 
+    // 2. Determine the object path based on the content SHA
+    std::string path = get_object_path(content_sha1);
+
+    // 3. If object doesn't exist at that path, create and write it
     if (!file_exists(path)) {
+        // a. Construct the full object data with header
+        std::string object_data = type + " " + std::to_string(content.size()) + '\0' + content;
+
+        // b. Compress the full object data
         std::vector<unsigned char> compressed = compress_data(object_data);
-        write_object(sha1, compressed);
+
+        // c. Ensure the directory exists for the path
+         try {
+            ensure_object_directory_exists(content_sha1); // Use content SHA for directory
+            // d. Write the compressed data to the file
+            write_file(path, compressed);
+         } catch (const std::exception& e) {
+             // Rethrow or handle more gracefully?
+              throw std::runtime_error("Failed to write object content for SHA " + content_sha1 + ": " + e.what());
+         }
     }
-    return sha1;
+
+    // 4. Return the SHA of the raw content
+    return content_sha1;
 }
 
 ParsedObject read_object(const std::string& sha1_prefix_or_full) {

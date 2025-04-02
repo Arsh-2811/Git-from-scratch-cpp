@@ -491,10 +491,16 @@ int handle_commit(const std::string& message) {
 
 
     // 8. Output commit info
-     std::cout << "[" << head_ref.substr(head_ref.find_last_of('/') + 1) /* Simple branch name */
-               << (head_parent_sha ? "" : " (root-commit)") // Indicate initial commit
-               << " " << commit_sha1.substr(0, 7) << "] " << message.substr(0, message.find('\n')) << std::endl;
+    std::string branch_name_display = "HEAD"; // Default for detached
+    if (head_ref.rfind("ref: refs/heads/", 0) == 0) {
+         branch_name_display = head_ref.substr(16); // Extract branch name
+    }
 
+    std::cout << "[" << branch_name_display
+              << (head_parent_sha ? "" : " (root-commit)") // Indicate initial commit
+              // <<< CHANGE THIS LINE: Print full SHA >>>
+              << " " << commit_sha1 << "] "
+              << message.substr(0, message.find('\n')) << std::endl;
 
     return 0;
 }
@@ -567,32 +573,62 @@ int handle_status() {
          }
     }
 
-     if (conflicted_files.empty() && staged_changes.empty() && unstaged_changes.empty() && untracked_files.empty()) {
-         std::cout << "nothing to commit, working tree clean" << std::endl;
-     } else {
-         if (!staged_changes.empty()) {
-             std::cout << "\nChanges to be committed:" << std::endl;
-             std::cout << "  (use \"mygit rm --cached <file>...\" to unstage)" << std::endl;
-             for(const auto& s : staged_changes) std::cout << "\033[32m" << s << "\033[0m" << std::endl; // Green
-         }
-          if (!conflicted_files.empty()) {
-             std::cout << "\nUnmerged paths:" << std::endl;
-             std::cout << "  (use \"mygit add <file>...\" to mark resolution)" << std::endl;
-             for(const auto& s : conflicted_files) std::cout << "\033[31m" << s << "\033[0m" << std::endl; // Red
-         }
-         if (!unstaged_changes.empty()) {
-             std::cout << "\nChanges not staged for commit:" << std::endl;
-             std::cout << "  (use \"mygit add <file>...\" to update what will be committed)" << std::endl;
-              std::cout << "  (use \"mygit restore <file>...\" to discard changes in working directory - NOT IMPLEMENTED)" << std::endl; // Placeholder for restore/checkout
-             for(const auto& s : unstaged_changes) std::cout << "\033[31m" << s << "\033[0m" << std::endl; // Red
-         }
-          if (!untracked_files.empty()) {
-             std::cout << "\nUntracked files:" << std::endl;
-             std::cout << "  (use \"mygit add <file>...\" to include in what will be committed)" << std::endl;
-             for(const auto& s : untracked_files) std::cout << "\033[31m" << s << "\033[0m" << std::endl; // Red
-         }
-     }
+    //  if (conflicted_files.empty() && staged_changes.empty() && unstaged_changes.empty() && untracked_files.empty()) {
+    //      std::cout << "nothing to commit, working tree clean" << std::endl;
+    //  } else {
+    //      if (!staged_changes.empty()) {
+    //          std::cout << "\nChanges to be committed:" << std::endl;
+    //          std::cout << "  (use \"mygit rm --cached <file>...\" to unstage)" << std::endl;
+    //          for(const auto& s : staged_changes) std::cout << "\033[32m" << s << "\033[0m" << std::endl; // Green
+    //      }
+    //       if (!conflicted_files.empty()) {
+    //          std::cout << "\nUnmerged paths:" << std::endl;
+    //          std::cout << "  (use \"mygit add <file>...\" to mark resolution)" << std::endl;
+    //          for(const auto& s : conflicted_files) std::cout << "\033[31m" << s << "\033[0m" << std::endl; // Red
+    //      }
+    //      if (!unstaged_changes.empty()) {
+    //          std::cout << "\nChanges not staged for commit:" << std::endl;
+    //          std::cout << "  (use \"mygit add <file>...\" to update what will be committed)" << std::endl;
+    //           std::cout << "  (use \"mygit restore <file>...\" to discard changes in working directory - NOT IMPLEMENTED)" << std::endl; // Placeholder for restore/checkout
+    //          for(const auto& s : unstaged_changes) std::cout << "\033[31m" << s << "\033[0m" << std::endl; // Red
+    //      }
+    //       if (!untracked_files.empty()) {
+    //          std::cout << "\nUntracked files:" << std::endl;
+    //          std::cout << "  (use \"mygit add <file>...\" to include in what will be committed)" << std::endl;
+    //          for(const auto& s : untracked_files) std::cout << "\033[31m" << s << "\033[0m" << std::endl; // Red
+    //      }
+    //  }
 
+
+    // return 0;
+    bool changes_present = !staged_changes.empty() || !unstaged_changes.empty() || !conflicted_files.empty() || !untracked_files.empty();
+
+    if (!changes_present) { // Check if ALL lists are empty
+        std::cout << "nothing to commit, working tree clean" << std::endl;
+    } else {
+        if (!staged_changes.empty()) {
+            std::cout << "\nChanges to be committed:" << std::endl;
+            std::cout << "  (use \"mygit rm --cached <file>...\" to unstage)" << std::endl;
+            for(const auto& s : staged_changes) std::cout << "\033[32m" << s << "\033[0m" << std::endl; // Green
+        }
+        if (!conflicted_files.empty()) {
+            std::cout << "\nUnmerged paths:" << std::endl;
+            std::cout << "  (use \"mygit add <file>...\" to mark resolution)" << std::endl;
+            for(const auto& s : conflicted_files) std::cout << "\033[31m" << s << "\033[0m" << std::endl; // Red
+        }
+        if (!unstaged_changes.empty()) {
+            std::cout << "\nChanges not staged for commit:" << std::endl;
+            std::cout << "  (use \"mygit add <file>...\" to update what will be committed)" << std::endl;
+            std::cout << "  (use \"mygit restore <file>...\" to discard changes in working directory - NOT IMPLEMENTED)" << std::endl;
+            for(const auto& s : unstaged_changes) std::cout << "\033[31m" << s << "\033[0m" << std::endl; // Red
+        }
+        if (!untracked_files.empty()) {
+            std::cout << "\nUntracked files:" << std::endl;
+            std::cout << "  (use \"mygit add <file>...\" to include in what will be committed)" << std::endl;
+            for(const auto& s : untracked_files) std::cout << "\033[31m" << s << "\033[0m" << std::endl; // Red
+        }
+    }
+    // --- End Modified Printing Logic ---
 
     return 0;
 }

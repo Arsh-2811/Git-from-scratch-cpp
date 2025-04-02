@@ -7,6 +7,18 @@
 #include <iostream>
 #include <set>
 
+std::string get_workdir_sha(const std::string& path) {
+    try {
+        std::string content = read_file(path);
+        // If read_file returns empty for non-existent file, compute_sha1 handles it.
+        // If read_file throws, we catch it below.
+        return compute_sha1(content);
+    } catch (const std::exception& e) {
+        std::cerr << "Warning: Cannot read/hash workdir file " << path << ": " << e.what() << std::endl;
+        return ""; // Return empty on error
+    }
+}
+
 void read_tree_recursive(const std::string& tree_sha1, const std::string& current_path, std::map<std::string, std::string>& contents) {
     if (tree_sha1.empty()) return;
 
@@ -39,154 +51,169 @@ std::map<std::string, std::string> read_tree_contents(const std::string& tree_sh
 
 std::map<std::string, StatusEntry> get_repository_status() {
     std::map<std::string, StatusEntry> status_map;
-    std::set<std::string> processed_paths;
+    std::set<std::string> all_paths; // Collect all relevant paths here
 
+    // 1. Get HEAD commit's tree contents {path: sha1}
     std::map<std::string, std::string> head_tree_contents;
     std::optional<std::string> head_commit_sha = resolve_ref("HEAD");
     if (head_commit_sha) {
         try {
             ParsedObject commit_obj = read_object(*head_commit_sha);
             if (commit_obj.type == "commit") {
-                 std::string tree_sha = std::get<CommitObject>(commit_obj.data).tree_sha1;
-                 head_tree_contents = read_tree_contents(tree_sha);
-            } else {
-                 std::cerr << "Warning: HEAD resolved to a non-commit object: " << *head_commit_sha << std::endl;
-            }
-        } catch (const std::exception& e) {
-            std::cerr << "Warning: Could not read HEAD commit object (" << *head_commit_sha << "): " << e.what() << std::endl;
-        }
-    }
-
-    IndexMap index = read_index();
-
-    std::set<std::string> all_paths = {};
-    for (const auto& pair : head_tree_contents) all_paths.insert(pair.first);
-    for (const auto& pair : index) all_paths.insert(pair.first);
-
-
-    for(const std::string& path : all_paths) {
-        processed_paths.insert(path);
-        auto head_it = head_tree_contents.find(path);
-        auto index_stages_it = index.find(path);
-
-        bool in_head = (head_it != head_tree_contents.end());
-        bool in_index = (index_stages_it != index.end() && !index_stages_it->second.empty());
-
-        if (in_index) {
-            bool conflicted = false;
-            for(const auto& stage_pair : index_stages_it->second) {
-                if (stage_pair.first > 0) {
-                    conflicted = true;
-                    break;
-                }
-            }
-            if (conflicted) {
-                status_map[path].index_status = FileStatus::Conflicted;
-            } else {
-                auto stage0_it = index_stages_it->second.find(0);
-                if (stage0_it == index_stages_it->second.end()) {
-                    std::cerr << "Warning: Path " << path << " in index but no stage 0 found and not conflicted." << std::endl;
-                    continue; // Should not happen in normal operation
-                }
-                const IndexEntry& index_entry = stage0_it->second;
-
-                if (in_head) {
-                    if (head_it->second != index_entry.sha1) {
-                        status_map[path].index_status = FileStatus::ModifiedStaged;
-                    } else {
-                        status_map[path].index_status = FileStatus::Unmodified; // Assume mode matches if SHA matches
+                std::string tree_sha = std::get<CommitObject>(commit_obj.data).tree_sha1;
+                if (!tree_sha.empty()) { // Handle commits without trees? (Shouldn't happen often)
+                    head_tree_contents = read_tree_contents(tree_sha);
+                    for (const auto& pair : head_tree_contents) {
+                        all_paths.insert(pair.first);
                     }
-                } else {
-                    status_map[path].index_status = FileStatus::AddedStaged;
                 }
             }
+        } catch (...) { /* Ignore errors reading HEAD commit */ }
+    }
 
-        } else {
-            if (in_head) {
-                status_map[path].index_status = FileStatus::DeletedStaged;
-            } else {
-
+    // 2. Read the index {path: {stage: IndexEntry}}
+    IndexMap index = read_index();
+    std::map<std::string, IndexEntry> index_stage0; // Simplified view {path: Entry} for stage 0
+    bool has_conflicts = false;
+    for (const auto& path_pair : index) {
+        all_paths.insert(path_pair.first);
+        bool path_conflicted = false;
+        for (const auto& stage_pair : path_pair.second) {
+            if (stage_pair.first > 0) {
+                has_conflicts = true;
+                path_conflicted = true;
             }
         }
-        status_map[path].path = path;
+        auto stage0_it = path_pair.second.find(0);
+        if (stage0_it != path_pair.second.end()) {
+            index_stage0[path_pair.first] = stage0_it->second;
+            if (path_conflicted) {
+                 status_map[path_pair.first].index_status = FileStatus::Conflicted;
+            }
+        } else if (path_conflicted) {
+             status_map[path_pair.first].index_status = FileStatus::Conflicted;
+        }
     }
+
+    // 3. Scan Working Directory for *existing* files and add their paths
+    // We will calculate workdir SHAs *later* only when needed for comparison.
+    std::set<std::string> workdir_existing_paths;
     try {
         if (!fs::exists(".")) {
             throw std::runtime_error("Current working directory does not exist.");
         }
-
-        // TODO : Confirm the working of this code
         for (auto it = fs::recursive_directory_iterator("."), end = fs::recursive_directory_iterator(); it != end; ++it) {
             fs::path current_path_fs = it->path();
-            std::string current_path = current_path_fs.lexically_relative(fs::current_path()).generic_string();
+            std::string generic_rel_path;
+            try {
+                fs::path repo_root = fs::current_path();
+                fs::path rel_path = fs::relative(current_path_fs, repo_root);
+                generic_rel_path = rel_path.generic_string();
+                if (generic_rel_path.empty() || generic_rel_path == ".") continue;
+            } catch (...) { continue; }
 
+            // Ignore logic
             bool ignored = false;
-            if (current_path == GIT_DIR || current_path.rfind(GIT_DIR + "/", 0) == 0) {
+            if (generic_rel_path == GIT_DIR || generic_rel_path.rfind(GIT_DIR + "/", 0) == 0) {
                 ignored = true;
             }
+            // TODO: Add .gitignore parsing
 
             if (ignored) {
-                if (it->is_directory()) {
-                    
-                    it.disable_recursion_pending();
-                }
+                if (it->is_directory()) it.disable_recursion_pending();
                 continue;
             }
 
             if (it->is_regular_file() || it->is_symlink()) {
-                processed_paths.insert(current_path);
-                auto index_stages_it = index.find(current_path);
-                bool in_index = (index_stages_it != index.end() && !index_stages_it->second.empty());
-                bool index_conflicted = false;
-                if (in_index) {
-                    for (const auto& stage_pair : index_stages_it->second) {
-                        if (stage_pair.first > 0) index_conflicted = true;
-                    }
-                }
-
-
-                if (in_index && !index_conflicted) {
-                    auto stage0_it = index_stages_it->second.find(0);
-                    if (stage0_it == index_stages_it->second.end()) {
-                        continue;
-                    }
-                    const IndexEntry& index_entry = stage0_it->second;
-
-                    try {
-                        std::string workdir_content = read_file(current_path);
-                        std::string workdir_sha1 = compute_sha1(workdir_content);
-
-                        if (index_entry.sha1 != workdir_sha1) {
-                            status_map[current_path].workdir_status = FileStatus::ModifiedWorkdir;
-                        } else {
-                            status_map[current_path].workdir_status = FileStatus::Unmodified;
-                        }
-                    } catch (const std::exception& e) {
-                        std::cerr << "Warning: Cannot read/hash workdir file " << current_path << ": " << e.what() << std::endl;
-                        status_map[current_path].workdir_status = FileStatus::ModifiedWorkdir;
-                    }
-
-                } else if (!in_index) {
-                    status_map[current_path].workdir_status = FileStatus::AddedWorkdir;
-                }
-                status_map[current_path].path = current_path;
-             }
+                all_paths.insert(generic_rel_path); // Add path to the master set
+                workdir_existing_paths.insert(generic_rel_path); // Note that it exists
+            }
         }
     } catch (const fs::filesystem_error& e) {
         throw std::runtime_error("Filesystem error during status scan: " + std::string(e.what()));
     }
 
-    for(const auto& index_pair : index) {
-        const std::string& path = index_pair.first;
 
-        auto stage0_it = index_pair.second.find(0);
-        if (stage0_it != index_pair.second.end()) {
-            if (!file_exists(path)) {
-                processed_paths.insert(path);
-                status_map[path].workdir_status = FileStatus::DeletedWorkdir;
-                status_map[path].path = path;
-            }
+    // 4. Iterate through all unique paths and determine status
+    for (const std::string& path : all_paths) {
+        // Get state flags
+        bool in_head = (head_tree_contents.count(path) > 0);
+        bool in_index0 = (index_stage0.count(path) > 0);
+        bool in_workdir = (workdir_existing_paths.count(path) > 0); // Check existence first
+
+        // Get SHAs (only compute workdir SHA if needed)
+        std::string head_sha = in_head ? head_tree_contents[path] : "";
+        std::string index_sha = in_index0 ? index_stage0[path].sha1 : "";
+        std::string workdir_sha = ""; // Initialize empty
+
+        // Get existing status entry (might already be marked Conflicted)
+        StatusEntry& entry = status_map[path];
+        entry.path = path; // Ensure path is set
+
+        // Skip further checks if already marked conflicted
+        if (entry.index_status == FileStatus::Conflicted) {
+             continue;
         }
-    }
+
+        // Determine Index vs HEAD status (same as before)
+        if (in_index0 && in_head) {
+            if (index_sha != head_sha) entry.index_status = FileStatus::ModifiedStaged;
+        } else if (in_index0 && !in_head) {
+            entry.index_status = FileStatus::AddedStaged;
+        } else if (!in_index0 && in_head) {
+            entry.index_status = FileStatus::DeletedStaged;
+        }
+
+
+        // Determine Workdir vs Index status
+        if (in_index0) { // Path is tracked by the index (stage 0)
+             if (in_workdir) {
+                 workdir_sha = get_workdir_sha(path); // Compute SHA only if file exists and is tracked
+                 if (workdir_sha.empty()) { // Handle hashing error
+                     entry.workdir_status = FileStatus::ModifiedWorkdir; // Assume modified if error
+                 } else if (workdir_sha != index_sha) {
+                      entry.workdir_status = FileStatus::ModifiedWorkdir;
+                 }
+                 // else Unmodified (default)
+
+                  // <<<--- DEBUG OUTPUT (moved here) --- >>>
+                 if (path == "file1.txt" || path == "file2.txt") {
+                     std::cout << "DEBUG_STATUS: Path=" << path
+                               << " InWorkDir=YES IndexSHA=" << index_sha
+                               << " WorkdirSHA=" << workdir_sha
+                               << " Match=" << (!workdir_sha.empty() && index_sha == workdir_sha)
+                               << " Status=" << static_cast<int>(entry.workdir_status) << std::endl;
+                 }
+                 // <<<--- END DEBUG --- >>>
+
+             } else { // In index, but not in workdir
+                  entry.workdir_status = FileStatus::DeletedWorkdir;
+                  // <<<--- DEBUG OUTPUT --- >>>
+                  if (path == "file1.txt" || path == "file2.txt") {
+                      std::cout << "DEBUG_STATUS: Path=" << path
+                                << " InWorkDir=NO IndexSHA=" << index_sha
+                                << " WorkdirSHA=N/A"
+                                << " Status=" << static_cast<int>(entry.workdir_status) << std::endl;
+                  }
+                  // <<<--- END DEBUG --- >>>
+             }
+        } else { // Path is not tracked by the index (stage 0)
+             if (in_workdir) {
+                  entry.workdir_status = FileStatus::AddedWorkdir; // Untracked
+                  // <<<--- DEBUG OUTPUT --- >>>
+                   if (path == "file1.txt" || path == "file2.txt") {
+                       workdir_sha = get_workdir_sha(path); // Compute SHA for debug info
+                       std::cout << "DEBUG_STATUS: Path=" << path
+                                 << " InWorkDir=YES IndexSHA=N/A"
+                                 << " WorkdirSHA=" << workdir_sha
+                                 << " Status=" << static_cast<int>(entry.workdir_status) << std::endl;
+                   }
+                   // <<<--- END DEBUG --- >>>
+             }
+             // else: Not in index and not in workdir (relevant only if in HEAD, handled by index_status)
+        }
+
+    } // End loop through all_paths
+
     return status_map;
 }
