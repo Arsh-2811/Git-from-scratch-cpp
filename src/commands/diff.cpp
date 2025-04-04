@@ -65,29 +65,48 @@ std::map<std::string, std::string> read_tree_contents(const std::string& tree_sh
 
 std::map<std::string, StatusEntry> get_repository_status() {
     std::map<std::string, StatusEntry> status_map;
-    std::set<std::string> all_paths; // Collect all relevant paths here
+    std::set<std::string> all_paths;
 
     // 1. Get HEAD commit's tree contents {path: sha1}
     std::map<std::string, std::string> head_tree_contents;
     std::optional<std::string> head_commit_sha = resolve_ref("HEAD");
+    std::cout << "DEBUG_STATUS: Resolving HEAD commit..." << std::endl; // Keep this
     if (head_commit_sha) {
+        std::cout << "DEBUG_STATUS: HEAD commit SHA = " << *head_commit_sha << std::endl; // Keep this
         try {
             ParsedObject commit_obj = read_object(*head_commit_sha);
             if (commit_obj.type == "commit") {
                 std::string tree_sha = std::get<CommitObject>(commit_obj.data).tree_sha1;
-                if (!tree_sha.empty()) { // Handle commits without trees? (Shouldn't happen often)
-                    head_tree_contents = read_tree_contents(tree_sha);
+                 std::cout << "DEBUG_STATUS: HEAD tree SHA = " << tree_sha << std::endl; // Keep this
+                if (!tree_sha.empty()) {
+                    head_tree_contents = read_tree_contents(tree_sha); // Call recursive read
+                    // *** ADD THIS DEBUG BLOCK ***
+                    std::cout << "DEBUG_STATUS: Read HEAD tree contents. Size = " << head_tree_contents.size() << std::endl;
+                    for (const auto& pair : head_tree_contents) {
+                         std::cout << "DEBUG_STATUS:   HEAD Tree Entry: " << pair.first << " -> " << pair.second.substr(0,7) << std::endl;
+                    }
+                    // *** END ADDED DEBUG BLOCK ***
                     for (const auto& pair : head_tree_contents) {
                         all_paths.insert(pair.first);
                     }
+                } else {
+                     std::cout << "DEBUG_STATUS: HEAD commit has empty tree SHA!" << std::endl;
                 }
+            } else {
+                 std::cout << "DEBUG_STATUS: HEAD resolved object is not a commit (" << commit_obj.type << ")" << std::endl;
             }
-        } catch (...) { /* Ignore errors reading HEAD commit */ }
+        } catch (const std::exception& e) {
+            std::cerr << "DEBUG_STATUS: Exception reading HEAD commit/tree: " << e.what() << std::endl;
+         }
+    } else {
+         std::cout << "DEBUG_STATUS: HEAD could not be resolved to a commit." << std::endl;
     }
 
+
     // 2. Read the index {path: {stage: IndexEntry}}
+    // ... (Index reading logic as before, populating index_stage0 and all_paths) ...
     IndexMap index = read_index();
-    std::map<std::string, IndexEntry> index_stage0; // Simplified view {path: Entry} for stage 0
+    std::map<std::string, IndexEntry> index_stage0;
     bool has_conflicts = false;
     for (const auto& path_pair : index) {
         all_paths.insert(path_pair.first);
@@ -109,15 +128,16 @@ std::map<std::string, StatusEntry> get_repository_status() {
         }
     }
 
+
     // 3. Scan Working Directory for *existing* files and add their paths
-    // We will calculate workdir SHAs *later* only when needed for comparison.
+    // ... (Workdir scanning logic as before, populating workdir_existing_paths and all_paths) ...
     std::set<std::string> workdir_existing_paths;
     try {
-        if (!fs::exists(".")) {
-            throw std::runtime_error("Current working directory does not exist.");
-        }
+        // ... (recursive_directory_iterator loop as before) ...
+         if (!fs::exists(".")) { throw std::runtime_error("CWD does not exist."); }
         for (auto it = fs::recursive_directory_iterator("."), end = fs::recursive_directory_iterator(); it != end; ++it) {
-            fs::path current_path_fs = it->path();
+            // ... (path calculation, ignore logic) ...
+             fs::path current_path_fs = it->path();
             std::string generic_rel_path;
             try {
                 fs::path repo_root = fs::current_path();
@@ -125,109 +145,76 @@ std::map<std::string, StatusEntry> get_repository_status() {
                 generic_rel_path = rel_path.generic_string();
                 if (generic_rel_path.empty() || generic_rel_path == ".") continue;
             } catch (...) { continue; }
-
-            // Ignore logic
-            bool ignored = false;
-            if (generic_rel_path == GIT_DIR || generic_rel_path.rfind(GIT_DIR + "/", 0) == 0) {
-                ignored = true;
-            }
-            // TODO: Add .gitignore parsing
-
-            if (ignored) {
-                if (it->is_directory()) it.disable_recursion_pending();
-                continue;
-            }
+             bool ignored = false;
+            if (generic_rel_path == GIT_DIR || generic_rel_path.rfind(GIT_DIR + "/", 0) == 0) ignored = true;
+            if (ignored) { if (it->is_directory()) it.disable_recursion_pending(); continue; }
 
             if (it->is_regular_file() || it->is_symlink()) {
-                all_paths.insert(generic_rel_path); // Add path to the master set
-                workdir_existing_paths.insert(generic_rel_path); // Note that it exists
+                all_paths.insert(generic_rel_path);
+                workdir_existing_paths.insert(generic_rel_path);
             }
         }
-    } catch (const fs::filesystem_error& e) {
-        throw std::runtime_error("Filesystem error during status scan: " + std::string(e.what()));
-    }
+    } catch (const fs::filesystem_error& e) { /* ... */ }
 
 
     // 4. Iterate through all unique paths and determine status
+    // ... (Status determination logic using head_tree_contents, index_stage0, workdir_existing_paths as finalized in previous step) ...
     for (const std::string& path : all_paths) {
-        // Get state flags
         bool in_head = (head_tree_contents.count(path) > 0);
         bool in_index0 = (index_stage0.count(path) > 0);
-        bool in_workdir = (workdir_existing_paths.count(path) > 0); // Check existence first
+        bool in_workdir = (workdir_existing_paths.count(path) > 0);
 
-        // Get SHAs (only compute workdir SHA if needed)
-        std::string head_sha = in_head ? head_tree_contents[path] : "";
-        std::string index_sha = in_index0 ? index_stage0[path].sha1 : "";
-        std::string workdir_sha = ""; // Initialize empty
+        std::cout << "DEBUG_STATUS: Checking path='" << path
+                  << "' | in_head=" << in_head
+                  << " | in_index0=" << in_index0
+                  << " | in_workdir=" << in_workdir << std::endl;
 
-        // Get existing status entry (might already be marked Conflicted)
-        StatusEntry& entry = status_map[path];
-        entry.path = path; // Ensure path is set
+        // Get SHAs
+        std::string head_sha = in_head ? head_tree_contents.at(path) : ""; // Use .at for clarity? No, [] is fine.
+        std::string index_sha = in_index0 ? index_stage0.at(path).sha1 : "";
+        std::string workdir_sha = ""; // Calculated later if needed
 
-        // Skip further checks if already marked conflicted
-        if (entry.index_status == FileStatus::Conflicted) {
-             continue;
+        // *** Initialize status explicitly for this path ***
+        FileStatus current_index_status = FileStatus::Unmodified; // Default
+        FileStatus current_workdir_status = FileStatus::Unmodified; // Default
+
+        // Check if already marked conflicted during index read
+         bool already_conflicted = false;
+         if (status_map.count(path) && status_map[path].index_status == FileStatus::Conflicted) {
+             already_conflicted = true;
+             current_index_status = FileStatus::Conflicted; // Preserve conflict status
+         }
+
+        if (!already_conflicted) {
+            // Determine Index vs HEAD status
+            if (in_index0 && in_head) {
+                if (index_sha != head_sha) current_index_status = FileStatus::ModifiedStaged;
+            } else if (in_index0 && !in_head) {
+                current_index_status = FileStatus::AddedStaged;
+            } else if (!in_index0 && in_head) {
+                current_index_status = FileStatus::DeletedStaged;
+            }
+            std::cout << "DEBUG_STATUS:   -> IndexStatus=" << static_cast<int>(current_index_status) << std::endl;
+
+            // Determine Workdir vs Index status
+            if (in_index0) {
+                if (in_workdir) {
+                    workdir_sha = get_workdir_sha(path);
+                    if (workdir_sha.empty() || workdir_sha != index_sha) {
+                        current_workdir_status = FileStatus::ModifiedWorkdir;
+                    }
+                } else { current_workdir_status = FileStatus::DeletedWorkdir; }
+            } else { if (in_workdir) { current_workdir_status = FileStatus::AddedWorkdir; } }
+            std::cout << "DEBUG_STATUS:   -> WorkdirStatus=" << static_cast<int>(current_workdir_status) << std::endl;
+        } else {
+             std::cout << "DEBUG_STATUS:   -> Path was pre-marked Conflicted." << std::endl;
         }
 
-        // Determine Index vs HEAD status (same as before)
-        if (in_index0 && in_head) {
-            if (index_sha != head_sha) entry.index_status = FileStatus::ModifiedStaged;
-        } else if (in_index0 && !in_head) {
-            entry.index_status = FileStatus::AddedStaged;
-        } else if (!in_index0 && in_head) {
-            entry.index_status = FileStatus::DeletedStaged;
-        }
-
-
-        // Determine Workdir vs Index status
-        if (in_index0) { // Path is tracked by the index (stage 0)
-             if (in_workdir) {
-                 workdir_sha = get_workdir_sha(path); // Compute SHA only if file exists and is tracked
-                 if (workdir_sha.empty()) { // Handle hashing error
-                     entry.workdir_status = FileStatus::ModifiedWorkdir; // Assume modified if error
-                 } else if (workdir_sha != index_sha) {
-                      entry.workdir_status = FileStatus::ModifiedWorkdir;
-                 }
-                 // else Unmodified (default)
-
-                  // <<<--- DEBUG OUTPUT (moved here) --- >>>
-                 if (path == "file1.txt" || path == "file2.txt") {
-                     std::cout << "DEBUG_STATUS: Path=" << path
-                               << " InWorkDir=YES IndexSHA=" << index_sha
-                               << " WorkdirSHA=" << workdir_sha
-                               << " Match=" << (!workdir_sha.empty() && index_sha == workdir_sha)
-                               << " Status=" << static_cast<int>(entry.workdir_status) << std::endl;
-                 }
-                 // <<<--- END DEBUG --- >>>
-
-             } else { // In index, but not in workdir
-                  entry.workdir_status = FileStatus::DeletedWorkdir;
-                  // <<<--- DEBUG OUTPUT --- >>>
-                  if (path == "file1.txt" || path == "file2.txt") {
-                      std::cout << "DEBUG_STATUS: Path=" << path
-                                << " InWorkDir=NO IndexSHA=" << index_sha
-                                << " WorkdirSHA=N/A"
-                                << " Status=" << static_cast<int>(entry.workdir_status) << std::endl;
-                  }
-                  // <<<--- END DEBUG --- >>>
-             }
-        } else { // Path is not tracked by the index (stage 0)
-             if (in_workdir) {
-                  entry.workdir_status = FileStatus::AddedWorkdir; // Untracked
-                  // <<<--- DEBUG OUTPUT --- >>>
-                   if (path == "file1.txt" || path == "file2.txt") {
-                       workdir_sha = get_workdir_sha(path); // Compute SHA for debug info
-                       std::cout << "DEBUG_STATUS: Path=" << path
-                                 << " InWorkDir=YES IndexSHA=N/A"
-                                 << " WorkdirSHA=" << workdir_sha
-                                 << " Status=" << static_cast<int>(entry.workdir_status) << std::endl;
-                   }
-                   // <<<--- END DEBUG --- >>>
-             }
-             // else: Not in index and not in workdir (relevant only if in HEAD, handled by index_status)
-        }
-
-    } // End loop through all_paths
+        // Update the map entry for this path
+        status_map[path].path = path;
+        status_map[path].index_status = current_index_status;
+        status_map[path].workdir_status = current_workdir_status;
+    }
 
     return status_map;
 }

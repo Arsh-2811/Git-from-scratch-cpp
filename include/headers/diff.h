@@ -21,6 +21,8 @@ struct StatusEntry {
     FileStatus workdir_status = FileStatus::Unmodified; // Status Workdir vs Index
 };
 
+std::string get_workdir_sha(const std::string& path);
+
 std::map<std::string, StatusEntry> get_repository_status();
 
 std::map<std::string, std::string> read_tree_contents(const std::string& tree_sha1);

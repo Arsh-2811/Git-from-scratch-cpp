@@ -27,6 +27,7 @@ void print_usage() {
     std::cerr << "  read-tree <tree-ish> Read tree information into the index" << std::endl; // Add flags later
     std::cerr << "  merge <branch>    Join two or more development histories together" << std::endl;
     // Add cat-file, hash-object back if needed for low-level operations
+    std::cerr << "  rev-parse <ref>   Resolve ref name to SHA-1" << std::endl;
     std::cerr << "  cat-file (-t | -s | -p) <object>" << std::endl;
     std::cerr << "                    Provide content or type and size information for repository objects" << std::endl;
     std::cerr << "  hash-object [-w] [-t <type>] <file>" << std::endl;
@@ -161,6 +162,8 @@ int main(int argc, char* argv[]) {
 
             return handle_hash_object(filename, type, write_mode);
 
+        } else if (command == "rev-parse") {
+            return handle_rev_parse(collect_args(2, argc, argv));
         } else {
             std::cerr << "mygit: '" << command << "' is not a mygit command. See 'mygit --help' (or just 'mygit')." << std::endl;
             print_usage();

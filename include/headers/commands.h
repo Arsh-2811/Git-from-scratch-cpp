@@ -22,5 +22,6 @@ int handle_merge(const std::string& branch_to_merge);
 
 int handle_cat_file(const std::string& operation, const std::string& sha1_prefix);
 int handle_hash_object(const std::string& filename, const std::string& type, bool write_mode);
+int handle_rev_parse(const std::vector<std::string>& args);
 
 #endif

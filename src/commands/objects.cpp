@@ -12,6 +12,8 @@
 
 #include <openssl/sha.h>
 
+std::vector<unsigned char> hex_to_sha1(const std::string& sha1_hex);
+
 std::string get_object_path(const std::string& sha1) {
     if (sha1.length() != 40) {
         throw std::invalid_argument("Invalid SHA-1 length for path: " + sha1);
@@ -326,22 +328,108 @@ TagObject parse_tag_content(const std::string& content) {
 
 std::string format_tree_content(const std::vector<TreeEntry>& entries) {
     std::vector<TreeEntry> sorted_entries = entries;
+    // Use default string comparison, which works for Git tree sorting rules
     std::sort(sorted_entries.begin(), sorted_entries.end(), [](const TreeEntry& a, const TreeEntry& b) {
         return a.name < b.name;
     });
 
-    std::ostringstream oss;
+    // *** LET'S USE std::ostringstream for safer binary construction ***
+    std::ostringstream oss(std::ios::binary); // Ensure binary mode
+
     for (const auto& entry : sorted_entries) {
-        std::vector<unsigned char> sha1_binary = hex_to_sha1(entry.sha1);
-        if (sha1_binary.size() != SHA_DIGEST_LENGTH) {
-             throw std::logic_error("Internal error: Invalid SHA1 length during tree formatting.");
+        std::cout << "DEBUG_FORMAT_TREE: Processing entry Name=" << entry.name << " Mode=" << entry.mode << " SHA=" << entry.sha1.substr(0,7) << std::endl; // ADD DEBUG
+
+        // Validate mode and name before proceeding
+        if (entry.mode.empty() || entry.name.empty() || entry.sha1.length() != 40) {
+             std::cerr << "DEBUG_FORMAT_TREE: Skipping invalid entry: Name=" << entry.name << " Mode=" << entry.mode << " SHA=" << entry.sha1 << std::endl;
+             continue; // Skip invalid entry
         }
-        oss << entry.mode << " " << entry.name << '\0';
+
+        std::vector<unsigned char> sha1_binary;
+        try {
+             sha1_binary = hex_to_sha1(entry.sha1);
+             if (sha1_binary.size() != SHA_DIGEST_LENGTH) {
+                  throw std::runtime_error("hex_to_sha1 returned incorrect size"); // Should not happen if hex_to_sha1 is correct
+             }
+        } catch (const std::exception& e) {
+             // This would prevent the entry from being added if SHA is bad
+             std::cerr << "DEBUG_FORMAT_TREE: Error converting hex SHA for " << entry.name << ": " << e.what() << std::endl;
+             continue; // Skip entry with bad SHA
+        }
+
+
+        // Write "mode<space>name<null>"
+        oss << entry.mode << ' ' << entry.name << '\0';
+
+        // Check stream state *before* writing binary
+        if (!oss) {
+             std::cerr << "DEBUG_FORMAT_TREE: Stream error before writing binary for " << entry.name << std::endl;
+             // This indicates a problem writing the text part
+             continue;
+        }
+
+        // Write 20-byte binary SHA
         oss.write(reinterpret_cast<const char*>(sha1_binary.data()), sha1_binary.size());
+
+         // Check stream state *after* writing binary
+        if (!oss) {
+             std::cerr << "DEBUG_FORMAT_TREE: Stream error after writing binary for " << entry.name << std::endl;
+             // This indicates a problem writing the binary SHA
+             continue;
+        }
+         std::cout << "DEBUG_FORMAT_TREE: Wrote entry for " << entry.name << std::endl; // ADD DEBUG
     }
-    return oss.str();
+
+    std::string result = oss.str();
+    std::cout << "DEBUG_FORMAT_TREE: Final content size = " << result.size() << std::endl; // ADD DEBUG
+    return result; // Return the built string
 }
 
+
+
+
+// std::string format_tree_content(const std::vector<TreeEntry>& entries) {
+//     std::cout << "DEBUG_FORMAT_TREE: === ENTERING (Simplified Version) === Entry count = " << entries.size() << std::endl;
+//     std::ostringstream oss(std::ios::binary);
+
+//     for (const auto& entry : entries) { // Use original entries vector
+//         std::cout << "DEBUG_FORMAT_TREE: Processing entry Name=" << entry.name << " SHA=" << entry.sha1.substr(0,7) << std::endl;
+
+//         // Basic check
+//         if (entry.mode.empty() || entry.name.empty() || entry.sha1.length() != 40) {
+//             std::cerr << "DEBUG_FORMAT_TREE: !!! SKIPPING Basic Invalid Entry !!!" << std::endl;
+//             continue;
+//         }
+
+//         std::vector<unsigned char> sha1_binary;
+//         try {
+//             sha1_binary = hex_to_sha1(entry.sha1); // Call the debugged version
+//         } catch (const std::exception& e) {
+//              std::cerr << "DEBUG_FORMAT_TREE: !!! hex_to_sha1 FAILED: " << e.what() << std::endl;
+//              continue;
+//         }
+
+//         if (sha1_binary.size() != SHA_DIGEST_LENGTH) {
+//              std::cerr << "DEBUG_FORMAT_TREE: !!! hex_to_sha1 wrong size: " << sha1_binary.size() << std::endl;
+//              continue;
+//         }
+
+
+//         oss << entry.mode << ' ' << entry.name << '\0';
+//         oss.write(reinterpret_cast<const char*>(sha1_binary.data()), sha1_binary.size());
+
+//          if (!oss) {
+//              std::cerr << "DEBUG_FORMAT_TREE: !!! STREAM ERROR after writing entry !!!" << std::endl;
+//              // Don't continue, let it finish and return partial? Or break? Let's just note it.
+//          } else {
+//              std::cout << "DEBUG_FORMAT_TREE: Successfully wrote entry data to stream." << std::endl;
+//          }
+//     } // End for loop
+
+//     std::string result = oss.str();
+//     std::cout << "DEBUG_FORMAT_TREE: Final content size = " << result.size() << std::endl;
+//     return result;
+// }
 
 std::string format_commit_content(const std::string& tree_sha1, const std::vector<std::string>& parent_sha1s,
                                   const std::string& author, const std::string& committer, const std::string& message) {

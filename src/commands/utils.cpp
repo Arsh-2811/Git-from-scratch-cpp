@@ -217,18 +217,25 @@ std::string sha1_to_hex(const unsigned char* sha1_binary) {
 }
 
 std::vector<unsigned char> hex_to_sha1(const std::string& sha1_hex) {
+    std::cout << "DEBUG_HEX_TO_SHA1: Input = " << sha1_hex << std::endl; // ADD DEBUG
     if (sha1_hex.length() != SHA_DIGEST_LENGTH * 2) {
-        throw std::invalid_argument("Invalid hex SHA-1 string length: " + sha1_hex);
+        std::cerr << "DEBUG_HEX_TO_SHA1: Invalid length " << sha1_hex.length() << std::endl; // Add cerr debug
+        throw std::invalid_argument("Invalid hex SHA-1 string length: " + sha1_hex + " (Length: " + std::to_string(sha1_hex.length()) + ")");
     }
     std::vector<unsigned char> sha1_binary(SHA_DIGEST_LENGTH);
     for (size_t i = 0; i < SHA_DIGEST_LENGTH; ++i) {
         try {
-            unsigned int byte = std::stoul(sha1_hex.substr(i * 2, 2), nullptr, 16);
+            std::string byte_str = sha1_hex.substr(i * 2, 2);
+            unsigned int byte = std::stoul(byte_str, nullptr, 16);
+            if (byte > 255) { throw std::out_of_range("Hex byte value out of range: " + byte_str); }
             sha1_binary[i] = static_cast<unsigned char>(byte);
-        } catch (const std::exception& e) {
-             throw std::invalid_argument("Invalid hex character in SHA-1 string: " + sha1_hex);
+        } catch (const std::exception& e) { // Catch base std::exception
+             std::cerr << "DEBUG_HEX_TO_SHA1: Error at byte " << i << ": " << e.what() << std::endl; // Add cerr debug
+             // Rethrow with more context maybe?
+             throw std::runtime_error("Error converting hex SHA '" + sha1_hex + "' at byte " + std::to_string(i) + ": " + e.what());
         }
     }
+     std::cout << "DEBUG_HEX_TO_SHA1: Conversion successful." << std::endl; // ADD DEBUG
     return sha1_binary;
 }
 
