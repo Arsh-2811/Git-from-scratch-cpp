@@ -23,7 +23,12 @@ void update_ref(const std::string& ref_name, const std::string& value, bool symb
 
     std::string content_to_write = value;
     if (symbolic) {
-        content_to_write = "ref: " + value + "\n";
+        if (value.rfind("ref: ", 0) != 0) {
+            // This indicates an internal logic error - update_head should format it.
+            std::cerr << "Warning: Symbolic ref update called for '" << ref_name << "' but value '" << value << "' doesn't start with 'ref: '" << std::endl;
+            // Fallback or throw? Let's assume value is correct for now.
+        }
+        content_to_write = value + "\n"; // Use value directly, add newline
     } else {
         if (value.length() != 40 || value.find_first_not_of("0123456789abcdef") != std::string::npos) {
             if (ref_name != "HEAD") {
@@ -33,7 +38,7 @@ void update_ref(const std::string& ref_name, const std::string& value, bool symb
     }
 
     std::string lock_path_str = full_path_str + ".lock";
-     std::ofstream lock_file(lock_path_str);
+    std::ofstream lock_file(lock_path_str);
     if (!lock_file) {
         throw std::runtime_error("Failed to acquire lock for ref: " + ref_name);
     }

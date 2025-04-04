@@ -75,88 +75,176 @@ int handle_init() {
     }
 }
 
+bool add_single_file_to_index(const std::string& file_path_to_add, IndexMap& index_map) {
+    try {
+        // Basic ignore check (can be expanded with .gitignore later)
+        if (file_path_to_add == GIT_DIR || file_path_to_add.rfind(GIT_DIR + "/", 0) == 0) {
+            // std::cout << "DEBUG_ADD: Ignoring path within .mygit: " << file_path_to_add << std::endl;
+            return true; // Skipping is considered success in this context
+        }
+
+        // 1. Read file content
+        std::string content = read_file(file_path_to_add);
+        // Note: read_file might return empty if file doesn't exist or is empty.
+        // hash_and_write_object handles empty content correctly (creates empty blob).
+
+        // 2. Create blob object (writes if not exists)
+        std::string sha1 = hash_and_write_object("blob", content);
+
+        // 3. Get file mode
+        mode_t mode_raw = get_file_mode(file_path_to_add);
+         if (mode_raw == 0) {
+              std::cerr << "Warning: Could not determine mode for file: " << file_path_to_add << ". Using default 100644." << std::endl;
+              mode_raw = 0100644; // Default to non-executable
+         }
+         // Skip adding directories themselves to index (Git doesn't store empty dirs)
+         if (mode_raw == 0040000) {
+             return true; // Successfully skipped directory placeholder
+         }
+
+        std::stringstream ss;
+        ss << std::oct << mode_raw;
+        std::string mode_str = ss.str();
+
+        // 4. Prepare index entry (stage 0)
+        IndexEntry entry;
+        entry.mode = mode_str;
+        entry.sha1 = sha1;
+        entry.stage = 0;
+        entry.path = file_path_to_add; // Use the relative path passed in
+
+        // 5. Add/Update entry in the index map
+        remove_entry(index_map, file_path_to_add, 1);
+        remove_entry(index_map, file_path_to_add, 2);
+        remove_entry(index_map, file_path_to_add, 3);
+        add_or_update_entry(index_map, entry);
+        // std::cout << "DEBUG_ADD: Added/Updated " << file_path_to_add << std::endl;
+
+    } catch (const std::exception& e) {
+        std::cerr << "Error adding file '" << file_path_to_add << "': " << e.what() << std::endl;
+        return false; // Indicate error for this specific file
+    }
+    return true; // Success for this file
+}
+
 int handle_add(const std::vector<std::string>& files_to_add) {
     if (files_to_add.empty()) {
         std::cerr << "Nothing specified, nothing added." << std::endl;
-        std::cerr << "Maybe you wanted to say 'mygit add .'?" << std::endl; // Helpful message
+        std::cerr << "Maybe you wanted to say 'mygit add .'?" << std::endl;
         return 1;
     }
 
     IndexMap index = read_index(); // Read index once
+    std::set<std::string> processed_files; // Track files actually added/attempted
+    bool errors_encountered = false;
 
-    for (const std::string& filepath_arg : files_to_add) {
-         // Handle '.' (add all modified/new in current dir - needs expansion)
-         // Handle directories (recurse and add files) - needs expansion
-         // For now, assume individual files are passed
+    std::vector<std::string> paths_to_process = files_to_add; // Start with arguments
 
-        fs::path filepath = filepath_arg;
-         // Normalize path? Git stores relative paths.
-         std::string relative_path = filepath.lexically_normal().generic_string(); // Make separators consistent
+    // --- Expand directories ---
+    // We might need a temporary vector to avoid modifying while iterating if we used range-based for
+    std::vector<std::string> final_file_list;
+    std::vector<std::string> current_paths = files_to_add; // Start with arguments
+
+    // Basic '.' expansion (add everything in current dir)
+     if (std::find(current_paths.begin(), current_paths.end(), ".") != current_paths.end()) {
+         std::cout << "Expanding '.' ..." << std::endl;
+         // Remove '.' itself
+         current_paths.erase(std::remove(current_paths.begin(), current_paths.end(), "."), current_paths.end());
+         // Add contents of current directory (respecting ignores later)
+         try {
+              for (const auto& entry : fs::directory_iterator(".")) {
+                   // Add top-level files/dirs from current directory
+                   current_paths.push_back(entry.path().generic_string());
+              }
+         } catch (const fs::filesystem_error& e) {
+              std::cerr << "Warning: Failed to iterate current directory for '.': " << e.what() << std::endl;
+         }
+     }
 
 
-        if (!file_exists(relative_path)) {
+    // Expand directories recursively and collect file paths
+    for (const std::string& path_arg : current_paths) {
+         fs::path current_fs_path = path_arg;
+         std::string relative_path = current_fs_path.lexically_normal().generic_string();
+
+        if (!fs::exists(current_fs_path)) {
             std::cerr << "fatal: pathspec '" << relative_path << "' did not match any files" << std::endl;
-            // Should we continue or fail? Git continues.
+            errors_encountered = true; // Mark error but continue processing others
             continue;
         }
 
-         if (fs::is_directory(relative_path)) {
-             std::cerr << "Warning: Adding directories is not fully implemented yet. Skipping '" << relative_path << "'" << std::endl;
-             // TODO: Recurse into directory and add contained files
-             continue;
-         }
+        if (fs::is_directory(current_fs_path)) {
+             // --- RECURSIVE DIRECTORY ADD ---
+             try {
+                // Iterate recursively
+                 for (auto it = fs::recursive_directory_iterator(current_fs_path), end = fs::recursive_directory_iterator(); it != end; ++it) {
+                     fs::path sub_path_fs = it->path();
+                     std::string sub_relative_path;
+                      try { // Robust relative path calculation
+                         sub_relative_path = fs::relative(sub_path_fs, fs::current_path()).generic_string();
+                          if (sub_relative_path.empty() || sub_relative_path == ".") continue;
+                      } catch (...) { continue; }
 
-        try {
-            // 1. Read file content
-            std::string content = read_file(relative_path);
+                     // Basic ignore check (can be expanded)
+                     bool ignored = false;
+                     if (sub_relative_path == GIT_DIR || sub_relative_path.rfind(GIT_DIR + "/", 0) == 0) {
+                         ignored = true;
+                     }
+                     // TODO: Add .gitignore check here
 
-            // 2. Create blob object (writes if not exists)
-            std::string sha1 = hash_and_write_object("blob", content);
+                     if (ignored) {
+                         if (it->is_directory()) {
+                             it.disable_recursion_pending(); // Don't go into ignored dirs
+                         }
+                         continue;
+                     }
 
-            // 3. Get file mode (handle non-existence from get_file_mode?)
-            mode_t mode_raw = get_file_mode(relative_path);
-             if (mode_raw == 0) {
-                  std::cerr << "Warning: Could not determine mode for file: " << relative_path << ". Using default 100644." << std::endl;
-                  mode_raw = 0100644;
+                     // Add files to the final list
+                     if (it->is_regular_file() || it->is_symlink()) {
+                         final_file_list.push_back(sub_relative_path);
+                     }
+                 }
+             } catch (const fs::filesystem_error& e) {
+                  std::cerr << "Warning: Error iterating directory '" << relative_path << "': " << e.what() << std::endl;
+                  errors_encountered = true;
              }
-            
-             std::stringstream ss;
-             // Ensure it's formatted as octal. Git typically doesn't zero-pad 100xxx modes.
-             ss << std::oct << mode_raw;
-             std::string mode_str = ss.str();
-
-
-            // 4. Prepare index entry (stage 0)
-            IndexEntry entry;
-            entry.mode = mode_str;
-            entry.sha1 = sha1;
-            entry.stage = 0;
-            entry.path = relative_path;
-            // TODO: Populate stat data if implementing optimizations
-
-            // 5. Add/Update entry in the index map
-            // If the file was conflicted (stages > 0), adding it resolves the conflict
-            // by removing the higher stages and placing the new version at stage 0.
-            remove_entry(index, relative_path, 1);
-            remove_entry(index, relative_path, 2);
-            remove_entry(index, relative_path, 3);
-            add_or_update_entry(index, entry);
-
-
-        } catch (const std::exception& e) {
-            std::cerr << "Error adding file '" << relative_path << "': " << e.what() << std::endl;
-            // Continue to next file? Or return error? Git often continues.
+        } else if (fs::is_regular_file(current_fs_path) || fs::is_symlink(current_fs_path)) {
+             // It's a file/link directly specified
+             final_file_list.push_back(relative_path);
+        } else {
+             std::cerr << "Warning: Skipping unsupported file type: '" << relative_path << "'" << std::endl;
         }
+    } // End loop through initial arguments
+
+
+    // --- Process the final list of files ---
+    std::cout << "Adding " << final_file_list.size() << " file(s) to index..." << std::endl;
+    for (const std::string& final_file_path : final_file_list) {
+         // Use the helper function to add each file
+         if (!add_single_file_to_index(final_file_path, index)) {
+             errors_encountered = true; // Track if any individual add failed
+         }
     }
 
-    try {
-        write_index(index); // Write index back once at the end
-    } catch (const std::exception& e) {
-        std::cerr << "Error writing index file: " << e.what() << std::endl;
-        return 1; // Fail if index cannot be written
+
+    // --- Write index if changes were attempted ---
+    // Only write if the final list wasn't empty, even if errors occurred for some files
+    if (!final_file_list.empty()) {
+        try {
+            write_index(index);
+        } catch (const std::exception& e) {
+            std::cerr << "Error writing index file: " << e.what() << std::endl;
+            return 1; // Fail hard if index cannot be written
+        }
+    } else if (!errors_encountered) {
+         std::cerr << "Nothing specified, nothing added." << std::endl; // Case where only non-existent files were given
+         return 1;
     }
 
-    return 0;
+    // Return 0 if successful or partially successful (Git often returns 0 even if some paths fail)
+    // Return 1 only for major errors like cannot write index, or maybe if *all* paths failed?
+    // Let's return 0 unless index write fails.
+    return errors_encountered ? 1 : 0; // Optionally return 1 if any error occurred
 }
 
 
