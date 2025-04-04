@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <set>
 #include <queue>
+#include <map>
 
 int handle_init() {
     fs::path git_dir_path = GIT_DIR;
@@ -211,52 +212,96 @@ int handle_rm(const std::vector<std::string>& files_to_remove, bool cached_mode)
     return 0;
 }
 
+// --- Recursive Helper for write-tree ---
+// Takes index entries relevant to a specific directory level (relative paths)
+// Returns the SHA1 of the created tree object for this level
+std::string build_tree_recursive(const std::vector<IndexEntry>& entries_for_level) {
+    std::map<std::string, TreeEntry> files_in_level;
+    std::map<std::string, std::vector<IndexEntry>> dirs_in_level;
+
+    for (const IndexEntry& entry : entries_for_level) {
+        size_t slash_pos = entry.path.find('/');
+        if (slash_pos == std::string::npos) {
+            // File or empty dir placeholder at this level
+            // We only store files/symlinks from index directly
+             if (entry.mode == "100644" || entry.mode == "100755" || entry.mode == "120000") {
+                 files_in_level[entry.path] = {entry.mode, entry.path, entry.sha1};
+             }
+             // Ignore potential directory entries directly from index (mode 40000)
+        } else {
+            // Belongs in a subdirectory
+            std::string dir_name = entry.path.substr(0, slash_pos);
+            std::string rest_of_path = entry.path.substr(slash_pos + 1);
+
+            IndexEntry sub_entry = entry; // Copy entry
+            sub_entry.path = rest_of_path; // Update path to be relative to subdir
+            dirs_in_level[dir_name].push_back(sub_entry);
+        }
+    }
+
+    // Build TreeEntry vector for the current level
+    std::vector<TreeEntry> current_level_tree_entries;
+
+    // Add file entries
+    for (const auto& pair : files_in_level) {
+        current_level_tree_entries.push_back(pair.second);
+    }
+
+    // Recursively build and add directory entries
+    for (auto& pair : dirs_in_level) {
+        const std::string& dir_name = pair.first;
+        std::vector<IndexEntry>& subdir_entries = pair.second;
+
+        // Recursively build the tree for the subdirectory
+        std::string sub_tree_sha = build_tree_recursive(subdir_entries);
+
+        // Add the entry for this subdirectory to the current level's tree
+        current_level_tree_entries.push_back({"40000", dir_name, sub_tree_sha});
+    }
+
+    // Sort entries (required by Git) - format_tree_content handles sorting now
+    // std::sort(current_level_tree_entries.begin(), ...); // No need if formatter sorts
+
+    // Format, hash, and write the tree for this level
+    std::string tree_content = format_tree_content(current_level_tree_entries);
+    return hash_and_write_object("tree", tree_content);
+}
 
 // --- write-tree ---
 int handle_write_tree() {
     IndexMap index = read_index();
     if (index.empty()) {
-        std::cerr << "Error: Index is empty. Nothing to write." << std::endl;
-        return 1;
+        // Git allows writing an empty tree, useful for initial commits
+        // std::cerr << "Error: Index is empty. Nothing to write." << std::endl;
+        // return 1;
     }
 
     // Check for unmerged entries (conflicts)
-     for (const auto& path_pair : index) {
-         for (const auto& stage_pair : path_pair.second) {
-             if (stage_pair.first > 0) {
-                 std::cerr << "error: Path '" << path_pair.first << "' is unmerged." << std::endl;
-                 std::cerr << "fatal: Cannot write tree with unmerged paths." << std::endl;
-                 return 1;
-             }
-         }
-     }
-
-
-    // Convert index (stage 0) entries to TreeEntry format
-    std::vector<TreeEntry> tree_entries;
+    std::vector<IndexEntry> root_entries;
     for (const auto& path_pair : index) {
-         auto stage0_it = path_pair.second.find(0);
-         if (stage0_it != path_pair.second.end()) {
-            const IndexEntry& idx_entry = stage0_it->second;
-            // We only handle flat trees here. Building nested trees from paths like "dir/file.txt"
-            // requires recursive tree construction.
-            // TODO: Implement nested tree building if paths contain '/'.
-             if (idx_entry.path.find('/') != std::string::npos) {
-                 std::cerr << "Error: write-tree currently only supports flat directories (no '/'). Path: " << idx_entry.path << std::endl;
-                 return 1; // Fail for now
-             }
-
-             tree_entries.push_back({idx_entry.mode, idx_entry.path, idx_entry.sha1});
-         }
+        bool conflicted = false;
+        for (const auto& stage_pair : path_pair.second) {
+            if (stage_pair.first > 0) {
+                conflicted = true;
+                break;
+            }
+        }
+        if (conflicted) {
+             std::cerr << "error: Path '" << path_pair.first << "' is unmerged." << std::endl;
+             std::cerr << "fatal: Cannot write tree with unmerged paths." << std::endl;
+             return 1;
+        }
+        // Add stage 0 entry if present
+        auto stage0_it = path_pair.second.find(0);
+        if (stage0_it != path_pair.second.end()) {
+             root_entries.push_back(stage0_it->second);
+        }
     }
 
-
     try {
-        // Format and write the tree object
-        std::string tree_content = format_tree_content(tree_entries);
-        std::string tree_sha1 = hash_and_write_object("tree", tree_content);
-
-        std::cout << tree_sha1 << std::endl; // Output the tree SHA
+        // Start recursive build from the root
+        std::string root_tree_sha = build_tree_recursive(root_entries);
+        std::cout << root_tree_sha << std::endl; // Output the ROOT tree SHA
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "Error writing tree object: " << e.what() << std::endl;
@@ -264,216 +309,179 @@ int handle_write_tree() {
     }
 }
 
+
 // --- read-tree ---
 int handle_read_tree(const std::string& tree_sha_prefix, bool update_workdir, bool merge_mode) {
-    // ... (Resolve tree_sha, Read tree object, Read current index) ...
-     std::optional<std::string> tree_sha_opt = resolve_ref(tree_sha_prefix);
-     if (!tree_sha_opt) { /* fatal */ return 1; }
-     std::string tree_sha = *tree_sha_opt;
+    // 1. Resolve tree SHA
+    std::optional<std::string> tree_sha_opt = resolve_ref(tree_sha_prefix);
+    if (!tree_sha_opt) { std::cerr << "fatal: Not a valid tree object name: " << tree_sha_prefix << std::endl; return 1; }
+    std::string tree_sha = *tree_sha_opt;
 
-     std::map<std::string, TreeEntry> tree_map;
+    // 2. Get target tree contents (recursively)
+    // Stores { "full/path": "sha1" }
+    std::map<std::string, std::string> target_tree_contents;
+    // We also need mode info for checkout, so let's modify read_tree_contents or use a different approach
+    // For simplicity now, let's re-parse the tree during checkout logic.
+    // We still need the flat list for comparison.
      try {
-        ParsedObject parsed_obj = read_object(tree_sha);
-        if (parsed_obj.type != "tree") { /* fatal */ return 1; }
-        const auto& tree = std::get<TreeObject>(parsed_obj.data);
-         for(const auto& entry : tree.entries) {
-             if (entry.mode != "40000") {
-                tree_map[entry.name] = entry;
-             } else { /* warning */ }
+         // Ensure it's actually a tree first
+         ParsedObject root_obj = read_object(tree_sha);
+         if(root_obj.type != "tree") {
+              std::cerr << "fatal: Object " << tree_sha << " is not a tree." << std::endl;
+              return 1;
          }
-     } catch (...) { /* fatal */ return 1; }
+        target_tree_contents = read_tree_contents(tree_sha); // Get flat list for comparison/index update
+     } catch (const std::exception& e) {
+         std::cerr << "fatal: Failed to read target tree " << tree_sha << ": " << e.what() << std::endl;
+         return 1;
+     }
 
-     IndexMap index = read_index();
 
+    // 3. Read current index (needed for comparison if updating workdir)
+    IndexMap old_index_map = read_index(); // Read before modifying
+    IndexMap new_index_map; // Build the new index state
 
-    // 4. Update index based on mode
-    if (merge_mode) {
-        std::cerr << "Warning: read-tree merge mode (-m) is highly simplified." << std::endl;
-        for (const auto& pair : tree_map) {
-            const TreeEntry& tree_entry = pair.second;
-            IndexEntry idx_entry;
-            idx_entry.mode = tree_entry.mode;
-            idx_entry.path = tree_entry.name;
-            idx_entry.sha1 = tree_entry.sha1;
-            idx_entry.stage = 0;
-            add_or_update_entry(index, idx_entry);
-        }
-    } else { // Overwrite Mode
-        index.clear();
-        for (const auto& pair : tree_map) {
-             const TreeEntry& tree_entry = pair.second;
-             IndexEntry idx_entry;
-             idx_entry.mode = tree_entry.mode;
-             idx_entry.path = tree_entry.name;
-             idx_entry.sha1 = tree_entry.sha1;
-             idx_entry.stage = 0;
-             add_or_update_entry(index, idx_entry);
-        }
-    }
+    // 4. Populate the new index map based on target tree
+    // This requires reading the tree structure again to get modes.
+    // Could optimize by having read_tree_contents return mode info too.
+    std::function<void(const std::string&, const std::string&)> populate_index_recursive =
+        [&](const std::string& current_tree_sha, const std::string& path_prefix)
+    {
+         try {
+            ParsedObject tree_obj_parsed = read_object(current_tree_sha);
+            if (tree_obj_parsed.type != "tree") return; // Skip non-trees
+            const auto& tree_data = std::get<TreeObject>(tree_obj_parsed.data);
 
-    // 5. Write the updated index
-    try {
-        write_index(index);
-    } catch (...) { /* Error */ return 1; }
+            for (const auto& entry : tree_data.entries) {
+                std::string full_path = path_prefix.empty() ? entry.name : path_prefix + "/" + entry.name;
+                if (entry.mode == "40000") { // Subtree
+                    populate_index_recursive(entry.sha1, full_path);
+                } else { // Blob or Symlink
+                    IndexEntry new_entry;
+                    new_entry.mode = entry.mode;
+                    new_entry.path = full_path;
+                    new_entry.sha1 = entry.sha1;
+                    new_entry.stage = 0;
+                    add_or_update_entry(new_index_map, new_entry);
+                }
+            }
+         } catch (...) { /* Ignore errors reading subtrees */ }
+    };
 
-    // 6. Update working directory if requested
+    populate_index_recursive(tree_sha, ""); // Populate new_index_map
+
+    // 5. Update working directory if requested (-u)
     if (update_workdir) {
-        std::cerr << "Warning: read-tree working directory update (-u) is not implemented." << std::endl;
-        // TODO: Implement workdir update
-        return 1; // <<< --- RETURN 1 HERE for unimplemented feature --- >>>
-    }
+         std::cout << "Updating workdir to match tree " << tree_sha.substr(0, 7) << "..." << std::endl;
+         std::set<std::string> processed_paths; // Track files/dirs handled
 
-    return 0; // Return 0 if not updating workdir or if successful
-}
+         // 5a. Deletions: Files in old index but not in new index
+         std::map<std::string, IndexEntry> old_index_stage0;
+         for(const auto& pair : old_index_map) {
+              if(pair.second.count(0)) old_index_stage0[pair.first] = pair.second.at(0);
+         }
+
+         for (const auto& old_pair : old_index_stage0) {
+             const std::string& path = old_pair.first;
+             if (new_index_map.find(path) == new_index_map.end()) {
+                 try {
+                    if (file_exists(path)) {
+                        std::cout << "  Deleting " << path << std::endl;
+                        fs::remove(path);
+                        processed_paths.insert(path);
+                        // TODO: Optionally remove empty parent directories
+                    }
+                 } catch (const fs::filesystem_error& e) {
+                     std::cerr << "Warning: Failed to delete file " << path << ": " << e.what() << std::endl;
+                     // Continue trying other files? Or abort? Let's continue.
+                 }
+             }
+         }
+
+         // 5b. Additions/Updates: Files in new index
+         for (const auto& new_pair : new_index_map) {
+             const std::string& path = new_pair.first;
+             const IndexEntry& new_entry = new_pair.second.at(0); // Should only have stage 0
+
+             processed_paths.insert(path); // Mark as handled
+
+             // Check if file needs update (doesn't exist or SHA differs)
+             bool needs_update = false;
+             if (!file_exists(path)) {
+                 needs_update = true;
+             } else {
+                 try {
+                     std::string current_content = read_file(path);
+                     std::string current_sha = compute_sha1(current_content);
+                     if (current_sha != new_entry.sha1) {
+                         needs_update = true;
+                     }
+                     // Also check mode?
+                      mode_t current_mode_raw = get_file_mode(path);
+                      std::string current_mode_str = std::to_string(current_mode_raw);
+                      if (current_mode_str != new_entry.mode && current_mode_raw != 0) {
+                           // Mode needs update even if content matches (e.g., chmod +x)
+                           needs_update = true; // Force rewrite or just chmod? Let's rewrite for simplicity.
+                           std::cout << "  Updating mode for " << path << std::endl;
+                      }
+
+                 } catch (...) { // Error reading/hashing existing file
+                     needs_update = true; // Assume update needed if we can't check
+                 }
+             }
+
+             if (needs_update) {
+                 try {
+                     std::cout << "  Checking out " << path << std::endl;
+                     ensure_parent_directory_exists(path); // Ensure directory exists!
+
+                     // Read blob content
+                     ParsedObject blob_obj = read_object(new_entry.sha1);
+                     if (blob_obj.type != "blob") { // Handle symlinks maybe later
+                          std::cerr << "Warning: Expected blob object for " << path << ", got " << blob_obj.type << ". Skipping." << std::endl;
+                          continue;
+                     }
+                     const std::string& content = std::get<BlobObject>(blob_obj.data).content;
+
+                     // Write file content
+                     write_file(path, content);
+
+                     // Set mode (especially executable bit)
+                     if (new_entry.mode == "100755") {
+                         set_file_executable(path, true);
+                     } else if (new_entry.mode == "100644") {
+                          set_file_executable(path, false);
+                     }
+                     // Handle symlinks (mode 120000) separately if implemented
+
+                 } catch (const std::exception& e) {
+                      std::cerr << "Error checking out file " << path << ": " << e.what() << std::endl;
+                      // Abort checkout? Or continue? Let's continue but return error later.
+                      // return 1; // Abort approach
+                 }
+             }
+         }
+         // 5c. Cleanup: Remove untracked files that *were not* part of the old index? (Git keeps them)
+         // For simplicity, we don't remove extra files.
+
+    } // End if (update_workdir)
 
 
-// --- commit ---
-int handle_commit(const std::string& message) {
-    if (message.empty()) {
-        std::cerr << "Aborting commit due to empty commit message." << std::endl;
+    // 6. Write the final index (reflecting the target tree)
+    try {
+        // If merging, this logic needs to be different (3-way merge)
+        if (merge_mode) {
+             std::cerr << "Error: read-tree merge update logic not fully implemented." << std::endl;
+             return 1; // Don't write index in merge mode yet
+        }
+        write_index(new_index_map); // Write the index reflecting the target tree
+    } catch (const std::exception& e) {
+        std::cerr << "Error writing final index: " << e.what() << std::endl;
         return 1;
     }
 
-    // 1. Check for merge conflicts first
-    IndexMap current_index = read_index();
-    bool merge_in_progress = false;
-    std::string merge_head_sha;
-    std::string merge_head_path = GIT_DIR + "/MERGE_HEAD";
-     if (file_exists(merge_head_path)) {
-         merge_in_progress = true;
-         merge_head_sha = read_file(merge_head_path);
-         if (!merge_head_sha.empty() && merge_head_sha.back() == '\n') merge_head_sha.pop_back();
-         // Basic validation of merge head sha
-          if (merge_head_sha.length() != 40 || merge_head_sha.find_first_not_of("0123456789abcdef") != std::string::npos) {
-              std::cerr << "Error: Invalid SHA-1 found in MERGE_HEAD: " << merge_head_sha << std::endl;
-              return 1;
-          }
-     }
-
-     for (const auto& path_pair : current_index) {
-         for (const auto& stage_pair : path_pair.second) {
-             if (stage_pair.first > 0) {
-                 std::cerr << "error: Committing is not possible because you have unmerged files." << std::endl;
-                 std::cerr << "hint: Fix them up in the work tree, and then use 'mygit add <file>'." << std::endl;
-                 std::cerr << "fatal: Exiting because of unmerged files." << std::endl;
-                 return 1;
-             }
-         }
-     }
-
-
-    // 2. Write index to a tree object
-    std::string tree_sha1;
-    try {
-         // This re-reads the index, slightly inefficient but ensures consistency
-         int write_tree_ret = handle_write_tree(); // Reuse write-tree logic
-         if (write_tree_ret != 0) {
-             std::cerr << "Error: Failed to write tree before commit." << std::endl;
-             return 1;
-         }
-          // We need the SHA printed by handle_write_tree. This is awkward.
-          // Refactor write-tree logic into a reusable function returning the SHA.
-
-          // --- Replicated/Refactored write-tree logic ---
-          IndexMap index_for_commit = read_index(); // Read again after conflict check
-          std::vector<TreeEntry> tree_entries;
-          for (const auto& path_pair : index_for_commit) {
-             auto stage0_it = path_pair.second.find(0);
-             if (stage0_it != path_pair.second.end()) {
-                  if (stage0_it->second.path.find('/') != std::string::npos) { // Check from write-tree
-                      std::cerr << "Error: commit currently only supports flat directories. Path: " << stage0_it->second.path << std::endl;
-                      return 1;
-                  }
-                 tree_entries.push_back({stage0_it->second.mode, stage0_it->second.path, stage0_it->second.sha1});
-             }
-         }
-          std::string tree_content = format_tree_content(tree_entries);
-          tree_sha1 = hash_and_write_object("tree", tree_content);
-          // --- End refactored logic ---
-
-    } catch (const std::exception& e) {
-         std::cerr << "Error creating tree object for commit: " << e.what() << std::endl;
-         return 1;
-    }
-
-
-    // 3. Determine parent commit(s)
-    std::vector<std::string> parent_sha1s;
-    std::optional<std::string> head_parent_sha = resolve_ref("HEAD");
-    if (head_parent_sha) {
-        // Check if index matches HEAD tree - if so, nothing to commit
-        try {
-            ParsedObject parent_commit_obj = read_object(*head_parent_sha);
-            if (parent_commit_obj.type == "commit") {
-                std::string parent_tree_sha = std::get<CommitObject>(parent_commit_obj.data).tree_sha1;
-                if (parent_tree_sha == tree_sha1 && !merge_in_progress) {
-                    std::cerr << "On branch " << read_head() /* Improve branch reporting */ << std::endl;
-                    std::cerr << "nothing to commit, working tree clean" << std::endl;
-                    return 0; // Nothing changed
-                }
-            }
-        } catch (...) { /* Ignore errors reading parent here */ }
-
-        parent_sha1s.push_back(*head_parent_sha);
-    } // Else: Initial commit, no parents
-
-
-     // Add merge parent if applicable
-     if (merge_in_progress) {
-         if (head_parent_sha && *head_parent_sha == merge_head_sha) {
-              std::cerr << "Warning: Attempting merge commit with HEAD == MERGE_HEAD. This shouldn't happen." << std::endl;
-              // Proceeding anyway, might result in duplicate parent
-         }
-         parent_sha1s.push_back(merge_head_sha);
-         // Ensure parents are unique and sorted? Git seems to list HEAD first, then merge parent.
-         // Let's keep the order: HEAD parent, then MERGE_HEAD parent.
-     }
-
-
-    // 4. Get author/committer info and time
-    std::string author = get_user_info() + " " + get_current_timestamp_and_zone();
-    std::string committer = author; // Use same for simplicity, Git allows different
-
-    // 5. Format and write commit object
-    std::string commit_content = format_commit_content(tree_sha1, parent_sha1s, author, committer, message);
-    std::string commit_sha1 = hash_and_write_object("commit", commit_content);
-
-    // 6. Update HEAD reference
-    std::string head_ref = read_head();
-    if (head_ref.rfind("ref: ", 0) == 0) {
-        // Update the branch HEAD points to
-        std::string current_branch_ref = head_ref.substr(5);
-        update_ref(current_branch_ref, commit_sha1);
-    } else {
-        // Detached HEAD - update HEAD directly
-        update_head(commit_sha1);
-    }
-
-     // 7. Clean up MERGE_HEAD if it was a merge commit
-     if (merge_in_progress) {
-         try {
-             fs::remove(merge_head_path);
-         } catch (const fs::filesystem_error& e) {
-             std::cerr << "Warning: Failed to remove MERGE_HEAD file: " << e.what() << std::endl;
-         }
-     }
-
-
-    // 8. Output commit info
-    std::string branch_name_display = "HEAD"; // Default for detached
-    if (head_ref.rfind("ref: refs/heads/", 0) == 0) {
-         branch_name_display = head_ref.substr(16); // Extract branch name
-    }
-
-    std::cout << "[" << branch_name_display
-              << (head_parent_sha ? "" : " (root-commit)") // Indicate initial commit
-              // <<< CHANGE THIS LINE: Print full SHA >>>
-              << " " << commit_sha1 << "] "
-              << message.substr(0, message.find('\n')) << std::endl;
-
-    return 0;
+    return 0; // Success
 }
-
 
 // --- status ---
 int handle_status() {
@@ -1097,6 +1105,285 @@ int handle_merge(const std::string& branch_to_merge) {
         return 1; // Return failure *as expected by test*
     }
 }
+
+int handle_checkout(const std::string& target_ref) {
+    std::cout << "Switching to '" << target_ref << "'..." << std::endl;
+
+    // 1. Safety Check: Ensure workdir/index is clean
+    // TODO: Implement a more robust check. For now, check basic status.
+    // This requires get_repository_status to be reasonably fast.
+     std::map<std::string, StatusEntry> current_status;
+     try {
+         current_status = get_repository_status();
+         bool dirty = false;
+         for(const auto& pair : current_status) {
+             // Check for any staged changes or unstaged workdir changes
+              if (pair.second.index_status != FileStatus::Unmodified ||
+                 (pair.second.workdir_status != FileStatus::Unmodified && pair.second.workdir_status != FileStatus::AddedWorkdir))
+              {
+                    // Allow AddedWorkdir (untracked files) to remain
+                    if (pair.second.index_status == FileStatus::Conflicted) {
+                         std::cerr << "error: You have unmerged paths." << std::endl;
+                         std::cerr << "hint: Fix them up in the work tree, and then use 'mygit add <file>'." << std::endl;
+                         return 1;
+                    }
+                    if(pair.second.workdir_status != FileStatus::AddedWorkdir){
+                         dirty = true;
+                         std::cerr << "error: Your local changes to the following files would be overwritten by checkout:" << std::endl;
+                         std::cerr << "  " << pair.first << std::endl;
+                         // List only first dirty file for brevity
+                         break;
+                    }
+
+              }
+         }
+         if(dirty){
+              std::cerr << "Please commit your changes or stash them before you switch branches." << std::endl;
+              std::cerr << "Aborting" << std::endl;
+              return 1;
+         }
+     } catch (const std::exception& e) {
+          std::cerr << "Error checking repository status before checkout: " << e.what() << std::endl;
+          return 1;
+     }
+
+
+    // 2. Resolve target ref to a commit SHA
+    std::optional<std::string> target_sha_opt = resolve_ref(target_ref);
+    if (!target_sha_opt) {
+        std::cerr << "fatal: pathspec '" << target_ref << "' did not match any file(s) known to git" << std::endl;
+        return 1;
+    }
+    std::string target_sha = *target_sha_opt;
+
+    // 3. Read the target commit and get its tree
+    std::string target_tree_sha;
+    try {
+        ParsedObject target_commit_obj = read_object(target_sha);
+        if (target_commit_obj.type != "commit") {
+             std::cerr << "fatal: Reference '" << target_ref << "' (" << target_sha.substr(0,7)
+                       << ") is not a commit object." << std::endl;
+             return 1;
+        }
+        target_tree_sha = std::get<CommitObject>(target_commit_obj.data).tree_sha1;
+         if (target_tree_sha.empty()){
+             // Handle commit with no tree (e.g. corrupt repo?)
+             std::cerr << "Warning: Target commit " << target_sha.substr(0,7) << " has no associated tree." << std::endl;
+             // Proceed with empty tree? Or fail? Let's proceed cautiously.
+             target_tree_sha = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"; // Known empty tree SHA
+         }
+
+    } catch (const std::exception& e) {
+        std::cerr << "fatal: Failed to read target commit object '" << target_sha.substr(0,7) << "': " << e.what() << std::endl;
+        return 1;
+    }
+
+
+    // 4. Update index and working directory using read-tree -u
+    int read_tree_ret = handle_read_tree(target_tree_sha, true /* update workdir */, false /* no merge mode */);
+    if (read_tree_ret != 0) {
+         std::cerr << "Error updating index/workdir during checkout. Checkout aborted partially." << std::endl;
+         // State might be inconsistent here!
+         return 1;
+    }
+
+
+    // 5. Update HEAD
+    std::string new_head_value;
+    bool is_branch = false;
+    // Check if target_ref corresponds to a known branch
+    std::string potential_branch_ref = get_branch_ref(target_ref);
+    std::string direct_ref_val = read_ref_direct(potential_branch_ref);
+     if (!direct_ref_val.empty() && resolve_ref(target_ref) == target_sha_opt) {
+         // It looks like a branch name that resolves to the target commit
+         new_head_value = "ref: " + potential_branch_ref;
+         is_branch = true;
+     } else {
+         // Detached HEAD - point directly to commit SHA
+         new_head_value = target_sha;
+         is_branch = false;
+     }
+
+    try {
+        update_head(new_head_value); // update_head handles symbolic/direct internally now
+    } catch (const std::exception& e) {
+         std::cerr << "Error updating HEAD during checkout: " << e.what() << std::endl;
+         // Index/workdir updated, but HEAD didn't! Bad state.
+         return 1;
+    }
+
+    // 6. Output confirmation message
+    if (is_branch) {
+        std::cout << "Switched to branch '" << target_ref << "'" << std::endl;
+    } else {
+        std::cout << "Note: switching to '" << target_ref << "'." << std::endl;
+        std::cout << "You are in 'detached HEAD' state..." << std::endl;
+        // Add more advice like git does
+    }
+
+    return 0;
+}
+
+int handle_commit(const std::string& message) {
+    if (message.empty()) {
+    std::cerr << "Aborting commit due to empty commit message." << std::endl;
+    return 1;
+    }
+    
+    // 1. Check for merge conflicts first
+    IndexMap current_index = read_index();
+    bool merge_in_progress = false;
+    std::string merge_head_sha;
+    std::string merge_head_path = GIT_DIR + "/MERGE_HEAD";
+     if (file_exists(merge_head_path)) {
+         merge_in_progress = true;
+         merge_head_sha = read_file(merge_head_path);
+         if (!merge_head_sha.empty() && merge_head_sha.back() == '\n') merge_head_sha.pop_back();
+         // Basic validation of merge head sha
+          if (merge_head_sha.length() != 40 || merge_head_sha.find_first_not_of("0123456789abcdef") != std::string::npos) {
+              std::cerr << "Error: Invalid SHA-1 found in MERGE_HEAD: " << merge_head_sha << std::endl;
+              return 1;
+          }
+     }
+    
+     for (const auto& path_pair : current_index) {
+         for (const auto& stage_pair : path_pair.second) {
+             if (stage_pair.first > 0) {
+                 std::cerr << "error: Committing is not possible because you have unmerged files." << std::endl;
+                 std::cerr << "hint: Fix them up in the work tree, and then use 'mygit add <file>'." << std::endl;
+                 std::cerr << "fatal: Exiting because of unmerged files." << std::endl;
+                 return 1;
+             }
+         }
+     }
+    
+    
+    // 2. Write index to a tree object
+    std::string tree_sha1;
+    try {
+        // --- Refactored write-tree logic Call ---
+        IndexMap index_for_commit = read_index();
+        std::vector<IndexEntry> root_entries;
+        // ... (conflict check again or assume handle_write_tree does it) ...
+         for (const auto& path_pair : index_for_commit) {
+            auto stage0_it = path_pair.second.find(0);
+            if (stage0_it != path_pair.second.end()) { root_entries.push_back(stage0_it->second); }
+            // Ensure no conflicts here too...
+             for (const auto& stage_pair : path_pair.second) { if (stage_pair.first > 0) { /* Error */ return 1;} }
+         }
+        tree_sha1 = build_tree_recursive(root_entries); // Get root tree SHA
+        // --- End refactored logic ---
+
+    } catch (const std::exception& e) {
+         std::cerr << "Error creating tree object for commit: " << e.what() << std::endl;
+         return 1;
+    }
+    
+    
+    // 3. Determine parent commit(s)
+    std::vector<std::string> parent_sha1s;
+    std::optional<std::string> head_parent_sha = resolve_ref("HEAD");
+    if (head_parent_sha) {
+        // Check if index matches HEAD tree - if so, nothing to commit
+        try {
+            ParsedObject parent_commit_obj = read_object(*head_parent_sha);
+            if (parent_commit_obj.type == "commit") {
+                std::string parent_tree_sha = std::get<CommitObject>(parent_commit_obj.data).tree_sha1;
+                if (parent_tree_sha == tree_sha1 && !merge_in_progress) {
+                    std::cerr << "On branch " << read_head() /* Improve branch reporting */ << std::endl;
+                    std::cerr << "nothing to commit, working tree clean" << std::endl;
+                    return 0; // Nothing changed
+                }
+            }
+        } catch (...) { /* Ignore errors reading parent here */ }
+    
+        parent_sha1s.push_back(*head_parent_sha);
+    } // Else: Initial commit, no parents
+
+     bool tree_changed = true; // Assume changed unless proven otherwise
+     if (head_parent_sha && !merge_in_progress) {
+         try {
+             ParsedObject parent_commit_obj = read_object(*head_parent_sha);
+             if (parent_commit_obj.type == "commit") {
+                 std::string parent_tree_sha = std::get<CommitObject>(parent_commit_obj.data).tree_sha1;
+                 if (parent_tree_sha == tree_sha1) {
+                      tree_changed = false;
+                 }
+             }
+         } catch (...) { /* Ignore errors reading parent */ }
+          if (!tree_changed) {
+             std::string head_ref_str = read_head();
+             std::string branch_name = head_ref_str; // Default to detached head SHA
+              if (head_ref_str.rfind("ref: ", 0) == 0) {
+                  branch_name = head_ref_str.substr(5); // Get ref path
+                  size_t last_slash = branch_name.find_last_of('/');
+                   if (last_slash != std::string::npos) {
+                       branch_name = branch_name.substr(last_slash + 1); // Get short name
+                   }
+              } else {
+                   branch_name = "HEAD detached at " + head_ref_str.substr(0,7);
+              }
+             std::cerr << "On branch " << branch_name << std::endl;
+             std::cerr << "nothing to commit, working tree clean" << std::endl;
+             return 0; // Nothing changed
+         }
+     }
+    
+     // Add merge parent if applicable
+     if (merge_in_progress) {
+         if (head_parent_sha && *head_parent_sha == merge_head_sha) {
+              std::cerr << "Warning: Attempting merge commit with HEAD == MERGE_HEAD. This shouldn't happen." << std::endl;
+              // Proceeding anyway, might result in duplicate parent
+         }
+         parent_sha1s.push_back(merge_head_sha);
+         // Ensure parents are unique and sorted? Git seems to list HEAD first, then merge parent.
+         // Let's keep the order: HEAD parent, then MERGE_HEAD parent.
+     }
+    
+    
+    // 4. Get author/committer info and time
+    std::string author = get_user_info() + " " + get_current_timestamp_and_zone();
+    std::string committer = author; // Use same for simplicity, Git allows different
+    
+    // 5. Format and write commit object
+    std::string commit_content = format_commit_content(tree_sha1, parent_sha1s, author, committer, message);
+    std::string commit_sha1 = hash_and_write_object("commit", commit_content);
+    
+    // 6. Update HEAD reference
+    std::string head_ref = read_head();
+    if (head_ref.rfind("ref: ", 0) == 0) {
+        // Update the branch HEAD points to
+        std::string current_branch_ref = head_ref.substr(5);
+        update_ref(current_branch_ref, commit_sha1);
+    } else {
+        // Detached HEAD - update HEAD directly
+        update_head(commit_sha1);
+    }
+    
+     // 7. Clean up MERGE_HEAD if it was a merge commit
+     if (merge_in_progress) {
+         try {
+             fs::remove(merge_head_path);
+         } catch (const fs::filesystem_error& e) {
+             std::cerr << "Warning: Failed to remove MERGE_HEAD file: " << e.what() << std::endl;
+         }
+     }
+    
+    
+    // 8. Output commit info
+    std::string branch_name_display = "HEAD"; // Default for detached
+    if (head_ref.rfind("ref: refs/heads/", 0) == 0) {
+         branch_name_display = head_ref.substr(16); // Extract branch name
+    }
+    
+    std::cout << "[" << branch_name_display
+              << (head_parent_sha ? "" : " (root-commit)") // Indicate initial commit
+              // <<< CHANGE THIS LINE: Print full SHA >>>
+              << " " << commit_sha1 << "] "
+              << message.substr(0, message.find('\n')) << std::endl;
+    
+    return 0;
+    }
 
 int handle_cat_file(const std::string& operation, const std::string& sha1_prefix) {
     // Add check for valid operation early

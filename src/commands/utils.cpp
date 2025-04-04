@@ -79,22 +79,65 @@ void ensure_directory_exists(const fs::path& dir_path) {
     }
 }
 
+void ensure_parent_directory_exists(const fs::path& file_path) {
+    fs::path parent_dir = file_path.parent_path();
+    // Check if parent_path is not empty (can happen for root files)
+    if (!parent_dir.empty()) {
+        ensure_directory_exists(parent_dir);
+    }
+}
+
 mode_t get_file_mode(const std::string& filename) {
     struct stat file_stat;
-    if (stat(filename.c_str(), &file_stat) == 0) {
+    // Use lstat to get info about the link itself, not the target
+    if (lstat(filename.c_str(), &file_stat) == 0) {
         if (S_ISLNK(file_stat.st_mode)) {
-            return 0120000;
+            return 0120000; // Symlink indicator used by Git
         } else if (S_ISDIR(file_stat.st_mode)) {
-            return 0040000;
-        }
-        mode_t mode = S_IFREG | (file_stat.st_mode & (S_IRWXU | S_IRWXG | S_IRWXO));
-        if (mode & (S_IXUSR | S_IXGRP | S_IXOTH)) {
-            return 0100755; // Executable
+            return 0040000; // Directory indicator
+        } else if (S_ISREG(file_stat.st_mode)) {
+            // Regular file check: combine type and permissions
+            // Check executable bits
+            if (file_stat.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) {
+                return 0100755; // Executable regular file
+            } else {
+                return 0100644; // Non-executable regular file
+            }
         } else {
-            return 0100644; // Non-executable
+            // Other file types - return 0 or a specific code?
+            return 0; // Unsupported type
         }
     }
-    return 0;
+    return 0; // Indicate error or non-existence
+}
+
+void set_file_executable(const std::string& filename, bool executable) {
+    #ifndef _WIN32 // Only works reliably on Unix-like systems
+   struct stat file_stat;
+   if (stat(filename.c_str(), &file_stat) != 0) {
+       std::cerr << "Warning: Cannot stat file to change mode: " << filename << std::endl;
+       return;
+   }
+
+   mode_t new_mode = file_stat.st_mode;
+   if (executable) {
+       // Add execute permissions for user, group, other if read is present
+       new_mode |= (new_mode & S_IRUSR) ? S_IXUSR : 0;
+       new_mode |= (new_mode & S_IRGRP) ? S_IXGRP : 0;
+       new_mode |= (new_mode & S_IROTH) ? S_IXOTH : 0;
+   } else {
+       // Remove execute permissions for all
+       new_mode &= ~(S_IXUSR | S_IXGRP | S_IXOTH);
+   }
+
+   if (chmod(filename.c_str(), new_mode) != 0) {
+        std::cerr << "Warning: Failed to change file mode for: " << filename << std::endl;
+   }
+    #else
+    // Windows doesn't have the same execute bit concept for regular files
+    (void)filename; // Suppress unused parameter warning
+    (void)executable;
+    #endif
 }
 
 std::string compute_sha1(const std::string& data) {

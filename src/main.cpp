@@ -19,6 +19,7 @@ void print_usage() {
     std::cerr << "  branch            List, create, or delete branches" << std::endl;
     std::cerr << "  branch <name> [<start>] Create a new branch" << std::endl;
     // std::cerr << "  branch -d <name>  Delete a branch" << std::endl; // Add delete later
+    std::cerr << "  checkout <branch|commit> Switch branches or restore working tree files" << std::endl;
     std::cerr << "  tag               List tags" << std::endl;
     std::cerr << "  tag [-a [-m <msg>]] <name> [<obj>]" << std::endl;
     std::cerr << "                    Create a tag object" << std::endl;
@@ -118,6 +119,13 @@ int main(int argc, char* argv[]) {
                 std::cerr << "Usage: mygit read-tree <tree-ish>" << std::endl; return 1;
             }
             return handle_read_tree(argv[2], false, false);
+        } else if (command == "checkout") {
+            if (argc != 3) {
+                std::cerr << "Usage: mygit checkout <branch|commit>" << std::endl;
+                // Add usage for checking out paths later maybe
+                return 1;
+            }
+            return handle_checkout(argv[2]);
         } else if (command == "merge") {
             if (argc != 3) {
                 std::cerr << "Usage: mygit merge <branch>" << std::endl; return 1;

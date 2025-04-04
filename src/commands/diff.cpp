@@ -19,33 +19,47 @@ std::string get_workdir_sha(const std::string& path) {
     }
 }
 
-void read_tree_recursive(const std::string& tree_sha1, const std::string& current_path, std::map<std::string, std::string>& contents) {
+// --- Tree Reading ---
+
+// Recursive helper for read_tree_contents
+void read_tree_recursive(const std::string& tree_sha1, const std::string& current_path_prefix, std::map<std::string, std::string>& contents) {
     if (tree_sha1.empty()) return;
 
     try {
+        // Read the tree object itself
+        // NOTE: Using read_object here which parses fully. Could optimize by just getting content.
         ParsedObject parsed_obj = read_object(tree_sha1);
         if (parsed_obj.type != "tree") {
+            // This could happen if a commit points to a non-tree object
             std::cerr << "Warning: Expected tree object, got " << parsed_obj.type << " for SHA " << tree_sha1 << std::endl;
             return;
         }
-        const auto& tree = std::get<TreeObject>(parsed_obj.data);
+        const auto& tree_obj = std::get<TreeObject>(parsed_obj.data); // Get the parsed TreeObject
 
-        for (const auto& entry : tree.entries) {
-            std::string full_path = current_path.empty() ? entry.name : current_path + "/" + entry.name;
-            if (entry.mode == "40000") {
+        // Iterate through entries in *this* tree
+        for (const auto& entry : tree_obj.entries) {
+            // Construct full path relative to the root
+            std::string full_path = current_path_prefix.empty() ? entry.name : current_path_prefix + "/" + entry.name;
+
+            if (entry.mode == "40000") { // It's a subdirectory (subtree)
+                // Recurse into the subtree
                 read_tree_recursive(entry.sha1, full_path, contents);
-            } else {
+            } else { // It's a blob (file) or symlink
+                // Store the blob/symlink SHA associated with the full path
                 contents[full_path] = entry.sha1;
+                // If mode was needed: contents[full_path] = {entry.sha1, entry.mode};
             }
         }
     } catch (const std::exception& e) {
-        std::cerr << "Warning: Failed to read tree object " << tree_sha1 << ": " << e.what() << std::endl;
+        // If tree object doesn't exist or is corrupt, stop recursion for this path
+        std::cerr << "Warning: Failed to read or parse tree object " << tree_sha1.substr(0, 7) << ": " << e.what() << std::endl;
     }
 }
 
+// Public function to get flattened tree contents
 std::map<std::string, std::string> read_tree_contents(const std::string& tree_sha1) {
     std::map<std::string, std::string> contents;
-    read_tree_recursive(tree_sha1, "", contents);
+    read_tree_recursive(tree_sha1, "", contents); // Start recursion with empty prefix
     return contents;
 }
 

@@ -16,7 +16,10 @@ void write_file(const std::string& filename, const std::string& data);
 void write_file(const std::string& filename, const std::vector<unsigned char>& data);
 bool file_exists(const std::string& filename);
 void ensure_directory_exists(const fs::path& dir_path);
+
+void ensure_parent_directory_exists(const fs::path& file_path); 
 mode_t get_file_mode(const std::string& filename);
+void set_file_executable(const std::string& filename, bool executable);
 
 std::string compute_sha1(const std::string& data);
 std::string compute_sha1(const std::vector<unsigned char>& data);

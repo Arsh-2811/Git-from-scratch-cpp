@@ -5,6 +5,8 @@
 #include <vector>
 #include <variant>
 
+#include <map>
+
 struct IndexEntry;
 
 struct BlobObject {
@@ -53,6 +55,8 @@ void write_object(const std::string& sha1, const std::string& object_type, const
 void write_object(const std::string& sha1, const std::vector<unsigned char>& compressed_data);
 
 ParsedObject read_object(const std::string& sha1_prefix_or_full);
+
+std::map<std::string, std::string> read_tree_contents(const std::string& tree_sha1);
 
 BlobObject parse_blob_content(const std::string& content);
 TreeObject parse_tree_content(const std::string& content);

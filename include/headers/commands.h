@@ -17,6 +17,7 @@ int handle_tag(const std::vector<std::string>& args);
 int handle_write_tree();
 int handle_read_tree(const std::string& tree_sha, bool update_workdir, bool merge_mode);
 
+int handle_checkout(const std::string& target_ref);
 int handle_merge(const std::string& branch_to_merge);
 
 int handle_cat_file(const std::string& operation, const std::string& sha1_prefix);
