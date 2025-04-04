@@ -32,6 +32,8 @@ void print_usage() {
     std::cerr << "                    Provide content or type and size information for repository objects" << std::endl;
     std::cerr << "  hash-object [-w] [-t <type>] <file>" << std::endl;
     std::cerr << "                    Compute object ID and optionally create an object from a file" << std::endl;
+    std::cerr << "  ls-tree [-r] <tree-ish>" << std::endl;
+    std::cerr << "                    List the contents of a tree object" << std::endl;
 }
 
 std::vector<std::string> collect_args(int start_index, int argc, char* argv[]) {
@@ -164,6 +166,8 @@ int main(int argc, char* argv[]) {
 
         } else if (command == "rev-parse") {
             return handle_rev_parse(collect_args(2, argc, argv));
+        } else if (command == "ls-tree") {
+            return handle_ls_tree(collect_args(2, argc, argv));
         } else {
             std::cerr << "mygit: '" << command << "' is not a mygit command. See 'mygit --help' (or just 'mygit')." << std::endl;
             print_usage();

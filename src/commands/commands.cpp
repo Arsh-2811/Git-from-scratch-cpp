@@ -1810,3 +1810,140 @@ int handle_rev_parse(const std::vector<std::string>& args) {
          return 1;
     }
 }
+
+void list_tree_recursive(const std::string& tree_sha, bool recursive, const std::string& path_prefix) {
+    if (tree_sha.empty()) {
+        std::cerr << "Warning: Attempted to list empty tree SHA." << std::endl;
+        return;
+    }
+
+    try {
+        ParsedObject parsed_obj = read_object(tree_sha);
+        if (parsed_obj.type != "tree") {
+            std::cerr << "Error: Object " << tree_sha.substr(0, 7) << " is not a tree." << std::endl;
+            // Should this throw or just return? Let's return to allow partial listing if called recursively.
+            return;
+        }
+        // Use the already parsed TreeObject data
+        const auto& tree_data = std::get<TreeObject>(parsed_obj.data);
+
+        // Entries within TreeObject should already be sorted by format_tree_content
+        // If not, sort here: std::sort(tree_data.entries.begin(), ...);
+
+        for (const auto& entry : tree_data.entries) {
+            // Determine object type string from mode
+            std::string type_str;
+            if (entry.mode == "40000") {
+                type_str = "tree";
+            } else if (entry.mode == "100644" || entry.mode == "100755") {
+                type_str = "blob";
+            } else if (entry.mode == "120000") {
+                type_str = "blob"; // Git ls-tree shows blob for symlinks too
+            } else {
+                type_str = "unknown"; // Should not happen with valid modes
+            }
+
+            // Construct full path for output
+            std::string full_path = path_prefix.empty() ? entry.name : path_prefix + "/" + entry.name;
+
+            // Print the formatted line
+            std::cout << entry.mode << " " << type_str << " " << entry.sha1 << "\t" << full_path << std::endl;
+
+            // Recurse if requested and if it's a subtree
+            if (recursive && type_str == "tree") {
+                list_tree_recursive(entry.sha1, true, full_path); // Pass recursive=true and updated prefix
+            }
+        }
+
+    } catch (const std::exception& e) {
+        std::cerr << "Error reading or processing tree object " << tree_sha.substr(0, 7) << ": " << e.what() << std::endl;
+        // Decide whether to continue or abort the whole command? Let's continue.
+    }
+}
+
+
+// --- ls-tree ---
+int handle_ls_tree(const std::vector<std::string>& args) {
+    bool recursive = false;
+    std::string tree_ish_arg;
+
+    // Basic argument parsing
+    if (args.empty()) {
+        std::cerr << "Usage: mygit ls-tree [-r] <tree-ish>" << std::endl;
+        return 1;
+    }
+
+    size_t tree_arg_index = 0;
+    if (args[0] == "-r") {
+        recursive = true;
+        tree_arg_index = 1;
+    }
+
+    if (args.size() <= tree_arg_index) {
+         std::cerr << "Usage: mygit ls-tree [-r] <tree-ish>" << std::endl;
+        return 1;
+    }
+    tree_ish_arg = args[tree_arg_index];
+
+    if (args.size() > tree_arg_index + 1) { // Check for extra arguments
+         std::cerr << "Usage: mygit ls-tree [-r] <tree-ish>" << std::endl;
+        return 1;
+    }
+
+    // Resolve the <tree-ish> argument
+    std::optional<std::string> resolved_sha_opt = resolve_ref(tree_ish_arg);
+    if (!resolved_sha_opt) {
+         std::cerr << "fatal: Not a valid object name: '" << tree_ish_arg << "'" << std::endl;
+         return 128;
+    }
+    std::string resolved_sha = *resolved_sha_opt;
+
+    // Determine the final tree SHA to list
+    std::string target_tree_sha;
+    try {
+        ParsedObject obj = read_object(resolved_sha);
+        if (obj.type == "commit") {
+            target_tree_sha = std::get<CommitObject>(obj.data).tree_sha1;
+            if (target_tree_sha.empty()) {
+                 std::cerr << "fatal: Commit " << resolved_sha.substr(0,7) << " does not have a tree." << std::endl;
+                 return 1;
+            }
+        } else if (obj.type == "tag") { // Annotated tag
+            std::string tagged_object_sha = std::get<TagObject>(obj.data).object_sha1;
+             std::string tagged_object_type = std::get<TagObject>(obj.data).type;
+             // Need to resolve the tagged object recursively until we hit commit/tree
+             std::optional<std::string> final_target_sha = resolve_ref(tagged_object_sha); // Reuse resolve_ref
+              if (!final_target_sha) {
+                  std::cerr << "fatal: Tag " << tree_ish_arg << " points to missing object " << tagged_object_sha.substr(0,7) << std::endl;
+                  return 1;
+              }
+              ParsedObject final_target_obj = read_object(*final_target_sha);
+              if (final_target_obj.type == "commit") {
+                   target_tree_sha = std::get<CommitObject>(final_target_obj.data).tree_sha1;
+              } else if (final_target_obj.type == "tree") {
+                   target_tree_sha = *final_target_sha;
+              } else {
+                    std::cerr << "fatal: Tag " << tree_ish_arg << " points to object of type '" << final_target_obj.type << "', not commit or tree." << std::endl;
+                    return 1;
+              }
+        } else if (obj.type == "tree") {
+            target_tree_sha = resolved_sha; // It's already a tree SHA
+        } else { // Blob or other?
+             std::cerr << "fatal: Object " << resolved_sha.substr(0,7) << " is not a commit or tree." << std::endl;
+             return 128;
+        }
+    } catch (const std::exception& e) {
+         std::cerr << "fatal: Failed to read object '" << resolved_sha.substr(0,7) << "': " << e.what() << std::endl;
+         return 1;
+    }
+
+    // Call the recursive listing function
+    try {
+         list_tree_recursive(target_tree_sha, recursive, "");
+    } catch (const std::exception& e) {
+         std::cerr << "Error during listing tree " << target_tree_sha.substr(0,7) << ": " << e.what() << std::endl;
+         return 1; // Indicate failure
+    }
+
+    return 0; // Success
+}
