@@ -63,6 +63,40 @@ std::map<std::string, std::string> read_tree_contents(const std::string& tree_sh
     return contents;
 }
 
+void read_tree_full_recursive(const std::string& tree_sha1, const std::string& current_path_prefix, std::map<std::string, TreeEntry>& contents) {
+    if (tree_sha1.empty()) return;
+    try {
+        ParsedObject parsed_obj = read_object(tree_sha1);
+        if (parsed_obj.type != "tree") {
+            std::cerr << "Warning: Expected tree object, got " << parsed_obj.type << " for SHA " << tree_sha1 << std::endl;
+            return;
+        }
+        const auto& tree_obj = std::get<TreeObject>(parsed_obj.data);
+
+        for (const auto& entry : tree_obj.entries) {
+            std::string full_path = current_path_prefix.empty() ? entry.name : current_path_prefix + "/" + entry.name;
+            if (entry.mode == "40000") { // Subdirectory
+                // Recursively read the subtree
+                read_tree_full_recursive(entry.sha1, full_path, contents);
+            } else { // Blob or Symlink
+                // Store the full TreeEntry associated with the full path
+                TreeEntry full_path_entry = entry; // Copy entry data
+                full_path_entry.name = full_path; // Use the full path as the effective name/key
+                contents[full_path] = full_path_entry;
+            }
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Warning: Failed to read or parse tree object " << tree_sha1.substr(0, 7) << " for full read: " << e.what() << std::endl;
+    }
+}
+
+// *** NEW: Public function for full tree map ***
+std::map<std::string, TreeEntry> read_tree_full(const std::string& tree_sha1) {
+    std::map<std::string, TreeEntry> contents;
+    read_tree_full_recursive(tree_sha1, "", contents);
+    return contents;
+}
+
 std::map<std::string, StatusEntry> get_repository_status() {
     std::map<std::string, StatusEntry> status_map;
     std::set<std::string> all_paths;

@@ -1,6 +1,7 @@
 #ifndef DIFF_H
 #define DIFF_H
 
+#include "headers/objects.h"
 #include <string>
 #include <map>
 
@@ -26,5 +27,7 @@ std::string get_workdir_sha(const std::string& path);
 std::map<std::string, StatusEntry> get_repository_status();
 
 std::map<std::string, std::string> read_tree_contents(const std::string& tree_sha1);
+
+std::map<std::string, TreeEntry> read_tree_full(const std::string &tree_sha1);
 
 #endif

@@ -12,6 +12,17 @@
 #include <set>
 #include <queue>
 #include <map>
+#include <optional>
+
+enum class MergeStatus { Unmodified, Added, Deleted, Modified, Conflict };
+struct MergePathResult {
+    MergeStatus status = MergeStatus::Unmodified;
+
+    std::optional<TreeEntry> base_entry;
+    std::optional<TreeEntry> ours_entry;
+    std::optional<TreeEntry> theirs_entry;
+    std::optional<TreeEntry> merged_entry;
+};
 
 int handle_init() {
     fs::path git_dir_path = GIT_DIR;
@@ -584,22 +595,24 @@ int handle_status() {
      }
      std::cout << "On branch " << branch_name << std::endl;
 
-     // Check for MERGE_HEAD
-     std::string merge_head_path = GIT_DIR + "/MERGE_HEAD";
-     if (file_exists(merge_head_path)) {
-          std::cout << "\nYou have unmerged paths." << std::endl;
-          std::cout << "  (fix conflicts and run \"mygit commit\")" << std::endl;
-     }
-
-
     // 2. Calculate Status
     std::map<std::string, StatusEntry> status;
+    bool has_conflicts_in_index = false;
     try {
         status = get_repository_status();
+        for (const auto& pair : status) {
+            if (pair.second.index_status == FileStatus::Conflicted) {
+                has_conflicts_in_index = true;
+                break;
+            }
+        }
     } catch (const std::exception& e) {
         std::cerr << "Error getting repository status: " << e.what() << std::endl;
         return 1;
     }
+
+    std::string merge_head_path = GIT_DIR + "/MERGE_HEAD";
+    bool merge_in_progress = file_exists(merge_head_path);
 
     // 3. Print Status Report
     std::vector<std::string> staged_changes;     // Modified, Added, Deleted (Index vs HEAD)
@@ -609,7 +622,6 @@ int handle_status() {
 
     for (const auto& pair : status) {
          const StatusEntry& entry = pair.second;
-         std::string status_line;
 
          // Check Conflicts first
          if (entry.index_status == FileStatus::Conflicted) {
@@ -635,34 +647,14 @@ int handle_status() {
          }
     }
 
-    //  if (conflicted_files.empty() && staged_changes.empty() && unstaged_changes.empty() && untracked_files.empty()) {
-    //      std::cout << "nothing to commit, working tree clean" << std::endl;
-    //  } else {
-    //      if (!staged_changes.empty()) {
-    //          std::cout << "\nChanges to be committed:" << std::endl;
-    //          std::cout << "  (use \"mygit rm --cached <file>...\" to unstage)" << std::endl;
-    //          for(const auto& s : staged_changes) std::cout << "\033[32m" << s << "\033[0m" << std::endl; // Green
-    //      }
-    //       if (!conflicted_files.empty()) {
-    //          std::cout << "\nUnmerged paths:" << std::endl;
-    //          std::cout << "  (use \"mygit add <file>...\" to mark resolution)" << std::endl;
-    //          for(const auto& s : conflicted_files) std::cout << "\033[31m" << s << "\033[0m" << std::endl; // Red
-    //      }
-    //      if (!unstaged_changes.empty()) {
-    //          std::cout << "\nChanges not staged for commit:" << std::endl;
-    //          std::cout << "  (use \"mygit add <file>...\" to update what will be committed)" << std::endl;
-    //           std::cout << "  (use \"mygit restore <file>...\" to discard changes in working directory - NOT IMPLEMENTED)" << std::endl; // Placeholder for restore/checkout
-    //          for(const auto& s : unstaged_changes) std::cout << "\033[31m" << s << "\033[0m" << std::endl; // Red
-    //      }
-    //       if (!untracked_files.empty()) {
-    //          std::cout << "\nUntracked files:" << std::endl;
-    //          std::cout << "  (use \"mygit add <file>...\" to include in what will be committed)" << std::endl;
-    //          for(const auto& s : untracked_files) std::cout << "\033[31m" << s << "\033[0m" << std::endl; // Red
-    //      }
-    //  }
+    if (has_conflicts_in_index) { // Conflicts actually exist in index
+        std::cout << "\nYou have unmerged paths." << std::endl;
+        std::cout << "  (fix conflicts and run \"mygit commit\")" << std::endl;
+  } else if (merge_in_progress) { // MERGE_HEAD exists, but index is clean
+       std::cout << "\nAll conflicts fixed but you are still merging." << std::endl;
+       std::cout << "  (use \"mygit commit\" to conclude merge)" << std::endl;
+  }
 
-
-    // return 0;
     bool changes_present = !staged_changes.empty() || !unstaged_changes.empty() || !conflicted_files.empty() || !untracked_files.empty();
 
     if (!changes_present) { // Check if ALL lists are empty
@@ -1124,234 +1116,438 @@ std::optional<std::string> find_merge_base(const std::string& sha1_a, const std:
     return std::nullopt;
 }
 
-int handle_merge(const std::string& branch_to_merge) {
-    // 1. Status Check TODO
-    // 2. Resolve SHAs
+int handle_merge(const std::string& branch_to_merge_name) {
+    // 1. Safety Check: Ensure workdir/index is clean (optional but recommended)
+    // TODO: Implement proper clean check using get_repository_status
+    std::cout << "Checking repository status before merge..." << std::endl;
+     std::map<std::string, StatusEntry> current_status;
+     try {
+         current_status = get_repository_status();
+         for(const auto& pair : current_status) {
+             if (pair.second.index_status != FileStatus::Unmodified ||
+                 (pair.second.workdir_status != FileStatus::Unmodified && pair.second.workdir_status != FileStatus::AddedWorkdir))
+              {
+                    if (pair.second.index_status == FileStatus::Conflicted) {
+                         std::cerr << "error: You have unmerged paths from a previous merge." << std::endl; return 128;
+                    }
+                    if(pair.second.workdir_status != FileStatus::AddedWorkdir){
+                         std::cerr << "error: Your local changes would be overwritten by merge." << std::endl;
+                         std::cerr << "hint: Commit or stash your changes before merging." << std::endl; return 128;
+                    }
+              }
+         }
+          if (file_exists(GIT_DIR + "/MERGE_HEAD")) {
+               std::cerr << "error: You are in the middle of a merge already." << std::endl; return 128;
+          }
+     } catch (...) { /* Error getting status */ return 1; }
+     std::cout << "Status OK." << std::endl;
+
+
+    // 2. Get commit SHAs
     std::optional<std::string> head_sha_opt = resolve_ref("HEAD");
-    if (!head_sha_opt) { std::cerr << "Error: Cannot merge, HEAD does not point to a commit." << std::endl; return 1; }
-    std::string head_sha = *head_sha_opt;
+    std::optional<std::string> theirs_sha_opt = resolve_ref(branch_to_merge_name);
+    if (!head_sha_opt) { std::cerr << "Error: Cannot merge, HEAD is unborn." << std::endl; return 1; }
+    if (!theirs_sha_opt) { std::cerr << "fatal: '" << branch_to_merge_name << "' does not point to a commit" << std::endl; return 1; }
+    std::string head_sha = *head_sha_opt;   // "Ours"
+    std::string theirs_sha = *theirs_sha_opt; // "Theirs"
 
-    std::optional<std::string> theirs_sha_opt = resolve_ref(branch_to_merge);
-    if (!theirs_sha_opt) { std::cerr << "fatal: '" << branch_to_merge << "' does not point to a commit" << std::endl; return 1; }
-    std::string theirs_sha = *theirs_sha_opt;
-
-    // std::cout << "DEBUG_MERGE: head_sha=" << head_sha.substr(0,7) << ", theirs_sha=" << theirs_sha.substr(0,7) << std::endl;
-
-    if (head_sha == theirs_sha) {
-        std::cout << "Already up to date." << std::endl;
-        return 0; // Correct return for this case
-    }
+    if (head_sha == theirs_sha) { std::cout << "Already up to date." << std::endl; return 0; }
 
     // 3. Find merge base
     std::optional<std::string> base_sha_opt = find_merge_base(head_sha, theirs_sha);
-    if (!base_sha_opt) {
-        std::cerr << "fatal: Could not find a common ancestor." << std::endl;
-        return 1; // Correct return
-    }
+    if (!base_sha_opt) { std::cerr << "fatal: Could not find a common ancestor." << std::endl; return 1; }
     std::string base_sha = *base_sha_opt;
-    // std::cout << "DEBUG_MERGE: base_sha=" << base_sha.substr(0, 7) << std::endl;
+    std::cout << "Merge base is " << base_sha.substr(0, 7) << std::endl;
 
-    // 4. Handle scenarios
-    if (base_sha == theirs_sha) {
-        // std::cout << "DEBUG_MERGE: Scenario -> Already up-to-date (base == theirs)" << std::endl;
-        std::cout << "Already up to date." << std::endl;
-        return 0; // Correct return for this case
-    } else if (base_sha == head_sha) {
-        // std::cout << "DEBUG_MERGE: Scenario -> Fast-forward (base == head)" << std::endl;
+    // 4. Handle easy cases (Already up-to-date or Fast-forward)
+    if (base_sha == theirs_sha) { std::cout << "Already up to date." << std::endl; return 0; }
+    if (base_sha == head_sha) {
         // --- Fast-forward merge ---
         std::cout << "Updating " << head_sha.substr(0, 7) << ".." << theirs_sha.substr(0, 7) << std::endl;
         std::cout << "Fast-forward" << std::endl;
-
         std::string theirs_tree_sha;
         try {
-             ParsedObject theirs_commit = read_object(theirs_sha);
-             if (theirs_commit.type != "commit") throw std::runtime_error("Target is not a commit");
-             theirs_tree_sha = std::get<CommitObject>(theirs_commit.data).tree_sha1;
-         } catch (const std::exception& e) { std::cerr << "Error reading target commit object " << theirs_sha << ": " << e.what() << std::endl; return 1; }
+            ParsedObject theirs_commit = read_object(theirs_sha); // Assumes commit object exists
+            theirs_tree_sha = std::get<CommitObject>(theirs_commit.data).tree_sha1;
+        } catch (const std::exception& e) { std::cerr << "Error reading target commit " << theirs_sha << ": " << e.what() << std::endl; return 1; }
 
+        // Update index and workdir using read-tree -u
         int read_tree_ret = handle_read_tree(theirs_tree_sha, true, false);
-        // Check the return code from read_tree
         if (read_tree_ret != 0) {
-            // Expected path because -u is not implemented
             std::cerr << "Error updating index/workdir during fast-forward. Merge aborted." << std::endl;
-            return 1; // Return failure *as expected by test*
-        } else {
-            std::cout << "Fast-forward merge successful. Updating HEAD..." << std::endl; // Indicate success
-            std::string head_ref = read_head();
-            if (head_ref.rfind("ref: ", 0) == 0) {
-                std::string current_branch_ref = head_ref.substr(5);
-                update_ref(current_branch_ref, theirs_sha); // Update branch
-            } else {
-                update_head(theirs_sha); // Update detached HEAD
-            }
-           return 0; // <<< RETURN 0 for SUCCESSFUL FF merge
+            // State might be inconsistent here!
+            return 1;
         }
-        // This part is now unreachable if read_tree returns 1 correctly
-        // return 0;
-    } else {
-        // std::cout << "DEBUG_MERGE: Scenario -> True Merge (base != head and base != theirs)" << std::endl;
-        // --- True merge (3-way merge required) ---
-        std::cerr << "fatal: True merge logic is not implemented yet." << std::endl;
-        return 1; // Return failure *as expected by test*
+
+        // Update HEAD reference
+        std::string head_ref = read_head();
+        if (head_ref.rfind("ref: ", 0) == 0) { update_ref(head_ref.substr(5), theirs_sha); }
+        else { update_head(theirs_sha); }
+        std::cout << "Merge successful (fast-forward)." << std::endl;
+        return 0;
     }
+
+    // --- 5. True 3-Way Merge ---
+    std::cout << "Attempting merge..." << std::endl;
+
+    // 5a. Read the three trees fully
+    std::map<std::string, TreeEntry> base_tree;
+    std::map<std::string, TreeEntry> ours_tree;
+    std::map<std::string, TreeEntry> theirs_tree;
+    try {
+        std::string base_tree_sha = std::get<CommitObject>(read_object(base_sha).data).tree_sha1;
+        std::string ours_tree_sha = std::get<CommitObject>(read_object(head_sha).data).tree_sha1;
+        std::string theirs_tree_sha = std::get<CommitObject>(read_object(theirs_sha).data).tree_sha1;
+
+        base_tree = read_tree_full(base_tree_sha);
+        ours_tree = read_tree_full(ours_tree_sha);
+        theirs_tree = read_tree_full(theirs_tree_sha);
+    } catch (const std::exception& e) {
+        std::cerr << "Error reading trees for merge: " << e.what() << std::endl;
+        return 1;
+    }
+
+    // 5b. Perform 3-way comparison
+    std::set<std::string> all_paths;
+    for(const auto& p : base_tree) all_paths.insert(p.first);
+    for(const auto& p : ours_tree) all_paths.insert(p.first);
+    for(const auto& p : theirs_tree) all_paths.insert(p.first);
+
+    std::map<std::string, MergePathResult> merge_results;
+    bool conflicts_found = false;
+
+    for (const std::string& path : all_paths) {
+        MergePathResult& result = merge_results[path]; // Get or create entry
+        auto base_it = base_tree.find(path);
+        auto ours_it = ours_tree.find(path);
+        auto theirs_it = theirs_tree.find(path);
+
+        bool in_base = (base_it != base_tree.end());
+        bool in_ours = (ours_it != ours_tree.end());
+        bool in_theirs = (theirs_it != theirs_tree.end());
+
+        // Store entries for later use in index/workdir update
+        if(in_base) result.base_entry = base_it->second;
+        if(in_ours) result.ours_entry = ours_it->second;
+        if(in_theirs) result.theirs_entry = theirs_it->second;
+
+        // --- Diff Logic ---
+        // Get SHAs (empty string if not present)
+        std::string base_sha = in_base ? base_it->second.sha1 : "";
+        std::string ours_sha = in_ours ? ours_it->second.sha1 : "";
+        std::string theirs_sha_path = in_theirs ? theirs_it->second.sha1 : ""; // Renamed to avoid scope clash
+
+        // Check for trivial cases first
+        if (in_ours && in_theirs && ours_sha == theirs_sha_path) { // Identical in ours and theirs
+            if (in_base && base_sha == ours_sha) {
+                result.status = MergeStatus::Unmodified; // No change from base
+            } else {
+                result.status = MergeStatus::Modified; // Changed from base, but same in both branches
+                result.merged_entry = ours_it->second; // Keep ours (or theirs)
+            }
+        } else if (!in_base) { // Added in one or both branches
+            if (in_ours && !in_theirs) { // Added only in ours
+                result.status = MergeStatus::Added;
+                result.merged_entry = ours_it->second;
+            } else if (!in_ours && in_theirs) { // Added only in theirs
+                result.status = MergeStatus::Added;
+                result.merged_entry = theirs_it->second;
+            } else if (in_ours && in_theirs) { // Added in both (Add/Add conflict)
+                result.status = MergeStatus::Conflict; // Potential content conflict if SHAs differ (checked above)
+                conflicts_found = true;
+                std::cout << "CONFLICT (add/add): File " << path << " added in both branches." << std::endl;
+            }
+        } else { // Existed in base
+            if (in_ours && !in_theirs) { // Deleted in theirs
+                if (base_sha == ours_sha) { // Not modified in ours
+                     result.status = MergeStatus::Deleted; // Clean delete
+                } else { // Modified in ours, deleted in theirs -> Conflict
+                     result.status = MergeStatus::Conflict;
+                     conflicts_found = true;
+                     std::cout << "CONFLICT (modify/delete): File " << path << " modified in HEAD and deleted in " << branch_to_merge_name << "." << std::endl;
+                }
+            } else if (!in_ours && in_theirs) { // Deleted in ours
+                 if (base_sha == theirs_sha_path) { // Not modified in theirs
+                     result.status = MergeStatus::Deleted; // Clean delete
+                 } else { // Modified in theirs, deleted in ours -> Conflict
+                      result.status = MergeStatus::Conflict;
+                      conflicts_found = true;
+                      std::cout << "CONFLICT (delete/modify): File " << path << " deleted in HEAD and modified in " << branch_to_merge_name << "." << std::endl;
+                 }
+            } else if (!in_ours && !in_theirs) { // Deleted in both (relative to base)
+                 if (base_sha == ours_sha || base_sha == theirs_sha_path) {
+                      // This case seems odd - if !in_ours or !in_theirs, sha check fails
+                      // This means deleted in both if base_sha matches neither (or one was already equal)
+                       result.status = MergeStatus::Deleted;
+                 } // else: somehow existed in base but not ours/theirs - already deleted?
+
+            } else { // Exists in base, ours, and theirs
+                 bool ours_modified = (ours_sha != base_sha);
+                 bool theirs_modified = (theirs_sha_path != base_sha);
+
+                 if (ours_modified && !theirs_modified) { // Modified only in ours
+                     result.status = MergeStatus::Modified;
+                     result.merged_entry = ours_it->second;
+                 } else if (!ours_modified && theirs_modified) { // Modified only in theirs
+                      result.status = MergeStatus::Modified;
+                      result.merged_entry = theirs_it->second;
+                 } else if (ours_modified && theirs_modified) { // Modified in both (Modify/Modify conflict)
+                       // Already checked if ours_sha == theirs_sha_path at the start
+                       result.status = MergeStatus::Conflict;
+                       conflicts_found = true;
+                        std::cout << "CONFLICT (content): Merge conflict in " << path << std::endl;
+                 } else { // Not modified in either branch
+                      result.status = MergeStatus::Unmodified;
+                      // result.merged_entry = base_it->second; // Keep base version
+                 }
+            }
+        } // End if (existed in base)
+    } // End loop through paths
+
+
+    // 5c. Update Index and Working Directory based on merge_results
+    IndexMap new_index;
+    bool update_errors = false;
+
+    for(const auto& pair : merge_results) {
+        const std::string& path = pair.first;
+        const MergePathResult& result = pair.second;
+
+        try { // Wrap file operations
+            switch (result.status) {
+                case MergeStatus::Unmodified:
+                    if (result.base_entry) // Keep base entry if unmodified
+                        add_or_update_entry(new_index, {result.base_entry->mode, result.base_entry->sha1, 0, path});
+                    // No workdir change needed
+                    break;
+
+                case MergeStatus::Added:
+                case MergeStatus::Modified:
+                     if (result.merged_entry) {
+                         // Add to index (Stage 0)
+                         add_or_update_entry(new_index, {result.merged_entry->mode, result.merged_entry->sha1, 0, path});
+                         // Update workdir
+                         ensure_parent_directory_exists(path);
+                         std::string content = std::get<BlobObject>(read_object(result.merged_entry->sha1).data).content;
+                         write_file(path, content);
+                         set_file_executable(path, result.merged_entry->mode == "100755");
+                         std::cout << " " << (result.status == MergeStatus::Added ? 'A' : 'M') << "\t" << path << std::endl;
+                     }
+                     break;
+
+                case MergeStatus::Deleted:
+                    // Remove from workdir if exists
+                     if (file_exists(path)) fs::remove(path);
+                     // No entry added to index
+                     std::cout << " D\t" << path << std::endl;
+                    break;
+
+                case MergeStatus::Conflict:
+                    // Add all three stages to index
+                    if(result.base_entry) add_or_update_entry(new_index, {result.base_entry->mode, result.base_entry->sha1, 1, path});
+                    if(result.ours_entry) add_or_update_entry(new_index, {result.ours_entry->mode, result.ours_entry->sha1, 2, path});
+                    if(result.theirs_entry) add_or_update_entry(new_index, {result.theirs_entry->mode, result.theirs_entry->sha1, 3, path});
+
+                    // Write conflict markers to workdir
+                    { // Scope for content strings
+                        std::string ours_content = result.ours_entry ? std::get<BlobObject>(read_object(result.ours_entry->sha1).data).content : "";
+                        std::string theirs_content = result.theirs_entry ? std::get<BlobObject>(read_object(result.theirs_entry->sha1).data).content : "";
+                        std::ostringstream conflict_content;
+                        conflict_content << "<<<<<<< HEAD\n"
+                                         << ours_content
+                                         << (ours_content.empty() || ours_content.back() != '\n' ? "\n" : "") // Ensure newline
+                                         << "=======\n"
+                                         << theirs_content
+                                         << (theirs_content.empty() || theirs_content.back() != '\n' ? "\n" : "") // Ensure newline
+                                         << ">>>>>>> " << branch_to_merge_name << "\n"; // Use branch name for clarity
+                        ensure_parent_directory_exists(path);
+                        write_file(path, conflict_content.str());
+                        std::cout << " C\t" << path << std::endl; // Indicate conflict
+                    }
+                    break;
+            } // End switch
+        } catch (const std::exception& e) {
+             std::cerr << "Error processing merge for path '" << path << "': " << e.what() << std::endl;
+             update_errors = true; // Mark error but try to continue
+        }
+
+    } // End loop processing results
+
+    // 5d. Write the final index
+    try {
+        write_index(new_index);
+    } catch (const std::exception& e) {
+        std::cerr << "FATAL: Error writing merged index: " << e.what() << std::endl;
+        // Should we try to rollback workdir changes? Complex.
+        return 1;
+    }
+
+    // 5e. Write MERGE_HEAD
+    if (conflicts_found || update_errors) { // Write MERGE_HEAD only if merge isn't clean
+        try {
+            write_file(GIT_DIR + "/MERGE_HEAD", theirs_sha + "\n");
+        } catch (const std::exception& e) {
+            std::cerr << "FATAL: Failed to write MERGE_HEAD: " << e.what() << std::endl;
+            return 1;
+        }
+        std::cout << "Automatic merge failed; fix conflicts and then commit the result." << std::endl;
+        return 1; // Indicate merge conflict state with exit code
+    } else {
+        // Successful auto-merge, proceed to create merge commit
+        std::cout << "Merge successful. Creating merge commit..." << std::endl;
+        // Construct commit message (e.g., "Merge branch 'theirs'")
+        std::string merge_message = "Merge branch '" + branch_to_merge_name + "'";
+        // Call commit logic - needs slight refactor or separate function
+        // to avoid re-reading index, re-writing tree, etc.
+        // For now, call handle_commit (less efficient)
+        return handle_commit(merge_message);
+    }
+
+    // Should not be reached
+    // return 0;
 }
 
 int handle_commit(const std::string& message) {
-    if (message.empty()) {
-        std::cerr << "Aborting commit due to empty commit message." << std::endl;
-        return 1;
-    }
+    // ... (1. Check for empty message) ...
+    if (message.empty()) { /* Abort */ return 1; }
 
-    // 1. Check for merge conflicts first
-    IndexMap current_index = read_index();
+    // --- Determine if merge is finishing ---
     bool merge_in_progress = false;
     std::string merge_head_sha;
     std::string merge_head_path = GIT_DIR + "/MERGE_HEAD";
-    // ... (conflict check logic as before) ...
-    for (const auto& path_pair : current_index) {
+    if (file_exists(merge_head_path)) {
+        merge_in_progress = true;
+        merge_head_sha = read_file(merge_head_path);
+        // Trim potential newline from MERGE_HEAD content
+        if (!merge_head_sha.empty() && merge_head_sha.back() == '\n') {
+            merge_head_sha.pop_back();
+        }
+        // Validate MERGE_HEAD SHA
+        if (merge_head_sha.length() != 40 || merge_head_sha.find_first_not_of("0123456789abcdef") != std::string::npos) {
+             std::cerr << "Error: Invalid SHA-1 found in MERGE_HEAD: " << merge_head_sha << std::endl;
+             // Don't proceed with faulty MERGE_HEAD
+             return 1;
+        }
+         std::cout << "DEBUG_COMMIT: Detected MERGE_HEAD with SHA: " << merge_head_sha << std::endl;
+    }
+
+
+    // 2. Check for UNRESOLVED merge conflicts in index
+    IndexMap current_index = read_index();
+    bool has_conflicts = false;
+     for (const auto& path_pair : current_index) {
          for (const auto& stage_pair : path_pair.second) {
-             if (stage_pair.first > 0) { /* Conflict error */ return 1; }
+             if (stage_pair.first > 0) {
+                  has_conflicts = true;
+                  break; // Found a conflict stage
+             }
          }
+          if (has_conflicts) break;
+     }
+     if (has_conflicts) {
+          std::cerr << "error: Committing is not possible because you have unmerged files." << std::endl;
+          std::cerr << "hint: Fix them up in the work tree, and then use 'mygit add <file>' to mark resolution." << std::endl;
+          std::cerr << "fatal: Exiting because of unmerged files." << std::endl;
+          return 1;
      }
 
 
-    // 2. Write index to a tree object
+    // 3. Write index to a tree object
     std::string tree_sha1;
-    std::vector<IndexEntry> root_entries; // Define here
-    try {
-        IndexMap index_for_commit = read_index();
-        // --- Get Stage 0 entries ---
-        for (const auto& path_pair : index_for_commit) {
+    std::vector<IndexEntry> root_entries;
+    try { /* ... build tree logic using build_tree_recursive ... */
+       for (const auto& path_pair : current_index) {
            auto stage0_it = path_pair.second.find(0);
-           if (stage0_it != path_pair.second.end()) {
-               root_entries.push_back(stage0_it->second);
-
-               std::cout << "DEBUG_COMMIT: Adding root entry path=" << stage0_it->second.path << " sha=" << stage0_it->second.sha1.substr(0,7) << std::endl;
-           }
-
-           for (const auto& stage_pair : path_pair.second) { 
-                if (stage_pair.first > 0) { 
-                    /* Conflict error */ 
-                    return 1;
-                } 
-            }
-        }
-        // --- End Get Stage 0 entries ---
-
-        // *** Check if index is truly empty ***
-        if (root_entries.empty() && !merge_in_progress) {
-             // Check if HEAD exists and points to the known empty tree
-             std::optional<std::string> current_head_commit = resolve_ref("HEAD");
-             if (current_head_commit) {
-                  try {
-                       ParsedObject head_commit_obj = read_object(*current_head_commit);
-                       if(head_commit_obj.type == "commit") {
-                           std::string head_tree_sha = std::get<CommitObject>(head_commit_obj.data).tree_sha1;
-                           if (head_tree_sha == "da39a3ee5e6b4b0d3255bfef95601890afd80709" || head_tree_sha.empty()) {
-                               // Index is empty and HEAD tree is empty - nothing to commit
-                               std::cerr << "nothing to commit (empty index matches empty HEAD tree)" << std::endl;
-                               return 0;
-                           }
-                       }
-                  } catch (...) { /* Ignore errors reading HEAD */ }
-             }
-            tree_sha1 = "da39a3ee5e6b4b0d3255bfef95601890afd80709"; // Use known empty tree SHA
-            std::cout << "DEBUG_COMMIT: Index is empty, setting tree SHA to empty: " << tree_sha1 << std::endl;
-        } else if (!root_entries.empty()){
-            // Only call build_tree if there are entries
-            tree_sha1 = build_tree_recursive(root_entries);
-        } else {
-            // Merge in progress with potentially empty index? How should this work?
-            // Let's assume for now merge implies non-empty index, or fail earlier.
-             tree_sha1 = "da39a3ee5e6b4b0d3255bfef95601890afd80709";
-             std::cout << "DEBUG_COMMIT: Merge in progress with empty index? Setting tree SHA to empty: " << tree_sha1 << std::endl;
-        }
-
-
-        // tree_sha1 = build_tree_recursive(root_entries); // Get root tree SHA
-        std::cout << "DEBUG_COMMIT: Final calculated tree SHA = " << tree_sha1 << std::endl;
-
-        if (tree_sha1.empty()) {
-            std::cerr << "FATAL_DEBUG: Tree SHA became empty unexpectedly!" << std::endl; return 1;
+           if (stage0_it != path_pair.second.end()) { root_entries.push_back(stage0_it->second); }
        }
+        if (root_entries.empty()) { tree_sha1 = "da39a3ee5e6b4b0d3255bfef95601890afd80709"; } // Handle empty commit
+        else { tree_sha1 = build_tree_recursive(root_entries); }
+        if (tree_sha1.empty()) throw std::runtime_error("Tree building returned empty SHA"); // Should not happen
+    } catch (...) { /* Error creating tree */ return 1; }
 
-    } catch (const std::exception& e) {
-        std::cerr << "Error creating tree object for commit: " << e.what() << std::endl;
-        return 1;
-    }
 
-    // 3. Determine parent commit(s)
+    // 4. Determine parent commit(s)
     std::vector<std::string> parent_sha1s;
     std::optional<std::string> head_parent_sha = resolve_ref("HEAD");
-    std::cout << "DEBUG_COMMIT: Parent SHA = " << (head_parent_sha ? *head_parent_sha : "None") << std::endl; // *** DEBUG PRINT ***
 
-    // Check if tree hasn't changed
-    if (head_parent_sha) {
+    // Check if tree hasn't changed (only if NOT a merge commit conclusion)
+    if (head_parent_sha && !merge_in_progress) {
         bool tree_changed = true;
         std::string parent_tree_sha = "";
-        try {
+        try { /* Get parent_tree_sha */
             ParsedObject parent_commit_obj = read_object(*head_parent_sha);
             if (parent_commit_obj.type == "commit") {
                 parent_tree_sha = std::get<CommitObject>(parent_commit_obj.data).tree_sha1;
-                std::cout << "DEBUG_COMMIT: Parent Tree SHA = " << parent_tree_sha << std::endl; // *** DEBUG PRINT ***
-                if (parent_tree_sha == tree_sha1 && !merge_in_progress) {
-                    tree_changed = false;
-                }
+                if (parent_tree_sha == tree_sha1) { tree_changed = false; }
             }
-        } catch (...) { /* Ignore errors reading parent */ }
+        } catch (...) { /* Ignore */ }
 
-        if (!tree_changed) {
-            // ... (print "nothing to commit" logic as before) ...
-            std::string head_ref_str = read_head();
-            std::string branch_name = "HEAD";
-            if (head_ref_str.rfind("ref: refs/heads/", 0) == 0) branch_name = head_ref_str.substr(16);
-            else if (!head_ref_str.empty()) branch_name = "HEAD detached at " + head_ref_str.substr(0,7);
-            std::cerr << "On branch " << branch_name << std::endl;
-            std::cerr << "nothing to commit, working tree clean" << std::endl;
-            return 0;
-        }
-        // If tree changed or initial commit, add parent SHA
-        parent_sha1s.push_back(*head_parent_sha);
-    } // Else: Initial commit (parent_sha1s remains empty)
-
-
-    // Add merge parent if applicable
-    if (merge_in_progress) {
-        if (head_parent_sha && *head_parent_sha == merge_head_sha) { /* Warning */ }
-        parent_sha1s.push_back(merge_head_sha);
+        if (!tree_changed) { /* Print "nothing to commit" */ return 0; }
     }
 
-    // 4. Get author/committer info and time
+    // Add parent(s)
+    if (head_parent_sha) {
+        parent_sha1s.push_back(*head_parent_sha); // Add current HEAD as first parent
+    }
+    if (merge_in_progress) {
+        // Add MERGE_HEAD as the second parent
+        if (std::find(parent_sha1s.begin(), parent_sha1s.end(), merge_head_sha) == parent_sha1s.end()) {
+             parent_sha1s.push_back(merge_head_sha);
+        } else {
+             std::cerr << "Warning: HEAD and MERGE_HEAD point to the same commit? Proceeding..." << std::endl;
+        }
+    }
+
+
+    // 5. Get author/committer info and time
     std::string author = get_user_info() + " " + get_current_timestamp_and_zone();
     std::string committer = author;
 
-    // 5. Format and write commit object
-    std::cout << "DEBUG_COMMIT: Formatting commit with tree=" << tree_sha1 << ", #parents=" << parent_sha1s.size() << std::endl; // *** DEBUG PRINT ***
+    // 6. Format and write commit object
     std::string commit_content = format_commit_content(tree_sha1, parent_sha1s, author, committer, message);
     std::string commit_sha1 = hash_and_write_object("commit", commit_content);
-    std::cout << "DEBUG_COMMIT: Created commit object SHA = " << commit_sha1 << std::endl; // *** DEBUG PRINT ***
 
 
-    // 6. Update HEAD reference
+    // 7. Update HEAD reference
     std::string head_ref = read_head();
-    if (head_ref.rfind("ref: ", 0) == 0) {
-        std::string current_branch_ref = head_ref.substr(5);
-        update_ref(current_branch_ref, commit_sha1);
-    } else {
-        update_head(commit_sha1);
+    try {
+        if (head_ref.rfind("ref: ", 0) == 0) {
+            update_ref(head_ref.substr(5), commit_sha1);
+        } else {
+            update_head(commit_sha1);
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "FATAL: Failed to update HEAD ref after commit: " << e.what() << std::endl;
+        // Commit object was written, but ref update failed - repo is in odd state
+        return 1;
     }
 
-    // 7. Clean up MERGE_HEAD if it was a merge commit
-    if (merge_in_progress) { /* ... remove MERGE_HEAD ... */ }
 
-    // 8. Output commit info
-    std::string branch_name_display = "HEAD";
-    if (head_ref.rfind("ref: refs/heads/", 0) == 0) branch_name_display = head_ref.substr(16);
-    else if (!head_ref.empty() && head_ref.find("ref: ") != 0) branch_name_display = "HEAD detached at " + head_ref.substr(0,7);
+    // *** FIX: Delete MERGE_HEAD AFTER successful commit and ref update ***
+    if (merge_in_progress) {
+        std::cout << "DEBUG_COMMIT: Deleting MERGE_HEAD..." << std::endl;
+        try {
+            if (fs::exists(merge_head_path)) { // Check existence before removing
+                fs::remove(merge_head_path);
+            } else {
+                 std::cerr << "Warning: MERGE_HEAD was expected but not found during cleanup." << std::endl;
+            }
+        } catch (const fs::filesystem_error& e) {
+            // Non-fatal warning if cleanup fails
+            std::cerr << "Warning: Failed to remove MERGE_HEAD file: " << e.what() << std::endl;
+        }
+    }
+
+    // 9. Output commit info
+    std::string branch_name_display = "HEAD"; // Default
+    // ... (logic to get branch_name_display as before) ...
+     if (head_ref.rfind("ref: refs/heads/", 0) == 0) branch_name_display = head_ref.substr(16);
+     else if (!head_ref.empty() && head_ref.find("ref: ") != 0) branch_name_display = "HEAD detached at " + head_ref.substr(0,7);
 
     std::cout << "[" << branch_name_display
-              << (parent_sha1s.empty() ? " (root-commit)" : "") // Use parent_sha1s empty check
-              << " " << commit_sha1 << "] " // Print full commit SHA
+              << (parent_sha1s.empty() ? " (root-commit)" : "") // Base on actual parents added
+              << (parent_sha1s.size() > 1 ? " (merge)" : "")    // Indicate merge commit
+              << " " << commit_sha1 << "] "
               << message.substr(0, message.find('\n')) << std::endl;
 
     return 0;

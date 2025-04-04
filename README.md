@@ -1,7 +1,6 @@
 # 🛠️ MyGit: Building Git from Scratch in C++ ✨
 
-[![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen?style=for-the-badge)](https://github.com/<your_username>/mygit) <!-- Replace with actual build badge if you set up CI -->
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT) <!-- Choose your license -->
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
 
 A deep dive into the internals of Git by re-implementing its core functionalities from the ground up using C++17. This project is primarily an educational endeavor to understand how version control systems work under the hood.
 
@@ -98,7 +97,7 @@ brew install cmake openssl zlib pkg-config
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/<your_username>/mygit.git # Replace with your repo URL
+    git clone https://github.com/Arsh-2811/Git-from-scratch-cpp.git
     cd mygit
     ```
 2.  **Create a build directory:**
