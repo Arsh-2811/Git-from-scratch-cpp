@@ -1,0 +1,5 @@
+{"properties": [{
+  "name": "base.url",
+  "type": "java.lang.String",
+  "description": "Location of the folder where the mygit repositories will be stored"
+}]}
