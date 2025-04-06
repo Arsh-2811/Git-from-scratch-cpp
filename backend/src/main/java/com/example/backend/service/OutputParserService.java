@@ -34,16 +34,21 @@ public class OutputParserService {
             return files;
         }
         output.lines().forEach(line -> {
-            String[] parts = line.split("\s+", 4);
+            String[] parts = line.split("\\s+", 4);
             if (parts.length == 4) {
                 String mode = parts[0];
                 String type = parts[1];
                 String sha = parts[2];
                 String pathAndName = parts[3].trim();
                 String name = pathAndName.substring(pathAndName.lastIndexOf('/') + 1);
+
+                System.out.println("mode : " + mode + " , type : " + type + " , sha : " + sha
+                                + " , name : " + name + ", pathAndName : " + pathAndName);
+
                 files.add(new FileInfo(mode, type, sha, name, pathAndName));
             }
         });
+        System.out.println("Files : " + files);
         return files;
     }
 
@@ -161,12 +166,17 @@ public class OutputParserService {
         if (output == null || output.isBlank()) {
             return branches;
         }
-        output.lines().forEach(line -> {
-            line = stripAnsi(line);
-            boolean isCurrent = line.startsWith("* ");
-            String name = isCurrent ? line.substring(2).trim() : line.trim();
-            branches.add(new BranchInfo(name, isCurrent, null));
-        });
+        output.lines()
+            .map(this::stripAnsi) // Assuming stripAnsi is defined
+            .map(String::trim)     // Trim whitespace
+            .filter(line -> !line.isEmpty()) // <<<--- ADD THIS FILTER
+            .forEach(line -> {
+                boolean isCurrent = line.startsWith("* ");
+                String name = isCurrent ? line.substring(2).trim() : line.trim();
+                if (!name.isEmpty()) { // Double check name is not empty after processing
+                    branches.add(new BranchInfo(name, isCurrent, null));
+                }
+            });
         return branches;
     }
 

@@ -5,8 +5,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -30,6 +33,43 @@ public class ViewService {
 
     @Autowired
     private OutputParserService parserService;
+
+    private TagInfo getTagDetails(String repoName, String tagName) throws IOException, InterruptedException {
+        // Reuse logic from listTags enhancement: resolve ref, cat-file -t, cat-file -p
+        // if annotated
+        // This is just a placeholder structure
+        TagInfo tagInfo = new TagInfo();
+        tagInfo.setName(tagName);
+        try {
+            String refTargetSha = resolveReference(repoName, tagName);
+            tagInfo.setSha(refTargetSha);
+            String refTargetType = getObjectInfo(repoName, refTargetSha, "t");
+
+            if ("tag".equals(refTargetType)) {
+                tagInfo.setType("annotated");
+                String tagContent = getObjectInfo(repoName, refTargetSha, "p");
+                String targetSha = null;
+                String targetType = null;
+                for (String line : tagContent.lines().collect(Collectors.toList())) {
+                    if (line.startsWith("object "))
+                        targetSha = line.substring(7).trim();
+                    else if (line.startsWith("type "))
+                        targetType = line.substring(5).trim();
+                }
+                tagInfo.setTargetSha(targetSha);
+                tagInfo.setTargetType(targetType);
+            } else {
+                tagInfo.setType("lightweight");
+                tagInfo.setTargetSha(refTargetSha);
+                tagInfo.setTargetType(refTargetType);
+            }
+        } catch (Exception e) {
+            System.err.println("Warning: Could not fully resolve tag details for '" + tagName + "' during tree lookup: "
+                    + e.getMessage());
+            // Allow proceeding if possible, handle potential nulls later
+        }
+        return tagInfo;
+    }
 
     private Path getValidatedRepoPath(String repoName) {
         Path basePath = Paths.get(repositoriesBasePath).toAbsolutePath().normalize();
@@ -90,58 +130,223 @@ public class ViewService {
     public List<FileInfo> getTreeContents(String repoName, String ref, String path, boolean recursive)
             throws IOException, InterruptedException {
         Path repoPath = getValidatedRepoPath(repoName);
-        String treeIsh = buildTreeIsh(ref, path);
-
-        List<String> command = new ArrayList<>(List.of("mygit", "ls-tree"));
-        if (recursive) {
-            command.add("-r");
+        validateRefName(ref);
+        // Path validation (allow null/empty for root)
+        if (path != null && (path.contains("..") || path.startsWith("/"))) {
+            throw new IllegalArgumentException("Invalid path format: " + path);
         }
-        command.add(treeIsh);
 
-        GitCommandExecutor.CommandResult result = commandExecutor.execute(repoPath.toString(), command);
+        // --- Logic to find the target tree SHA based on ref and path ---
+        String targetTreeSha;
+        try {
+            // 1. Resolve ref to commit/tag/tree SHA
+            String resolvedSha = resolveReference(repoName, ref); // Uses rev-parse
+
+            // 2. Get the initial tree SHA (root tree for commit/tag, or the SHA itself if
+            // it's a tree)
+            String initialTreeSha;
+            String objectType = getObjectInfo(repoName, resolvedSha, "t"); // cat-file -t
+
+            switch (objectType) {
+                case "commit":
+                    CommitInfo commitDetails = getCommitDetails(repoName, resolvedSha);
+                    initialTreeSha = commitDetails.getTree();
+                    break;
+                case "tag":
+                    // Need to dereference the tag fully to get the target commit/tree
+                    TagInfo tagInfo = getTagDetails(repoName, ref); // Assuming a helper method getTagDetails exists or
+                                                                    // implement here
+                    if ("commit".equals(tagInfo.getTargetType())) {
+                        initialTreeSha = getCommitDetails(repoName, tagInfo.getTargetSha()).getTree();
+                    } else if ("tree".equals(tagInfo.getTargetType())) {
+                        initialTreeSha = tagInfo.getTargetSha();
+                    } else {
+                        throw new IllegalArgumentException("Tag '" + ref + "' points to an object of unsupported type: "
+                                + tagInfo.getTargetType());
+                    }
+                    break;
+                case "tree":
+                    initialTreeSha = resolvedSha;
+                    break;
+                default:
+                    throw new IllegalArgumentException(
+                            "Reference '" + ref + "' resolves to an object of unsupported type: " + objectType);
+            }
+
+            if (initialTreeSha == null) {
+                throw new RuntimeException("Could not determine initial tree SHA for ref: " + ref);
+            }
+            validateShaFormat(initialTreeSha);
+
+            // 3. Traverse path components if path is provided
+            String currentTreeSha = initialTreeSha;
+            if (path != null && !path.isEmpty()) {
+                List<String> pathComponents = Arrays.asList(path.split("/"));
+                for (String dirName : pathComponents) {
+                    if (dirName.isEmpty())
+                        continue; // Skip empty segments if any
+
+                    validateShaFormat(currentTreeSha); // Validate before using
+                    List<String> lsTreeCommand = List.of("mygit", "ls-tree", currentTreeSha);
+                    GitCommandExecutor.CommandResult lsResult = commandExecutor.execute(repoPath.toString(),
+                            lsTreeCommand);
+
+                    if (!lsResult.isSuccess()) {
+                        throw new RuntimeException("mygit ls-tree failed for intermediate tree " + currentTreeSha + ": "
+                                + lsResult.stderr);
+                    }
+
+                    List<FileInfo> entries = parserService.parseLsTreeOutput(lsResult.stdout);
+                    Optional<FileInfo> dirEntry = entries.stream()
+                            .filter(e -> e.getName().equals(dirName) && "tree".equals(e.getType()))
+                            .findFirst();
+
+                    if (dirEntry.isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "Directory not found in path: '" + dirName + "' within tree " + currentTreeSha);
+                    }
+                    currentTreeSha = dirEntry.get().getSha(); // Update to the SHA of the subdirectory tree
+                }
+            }
+            targetTreeSha = currentTreeSha; // The final tree SHA after traversal
+
+        } catch (IllegalArgumentException e) { // Catch validation/not found errors earlier
+            System.err.println("Error resolving tree reference/path: " + e.getMessage());
+            throw e; // Re-throw to be caught by controller
+        } catch (Exception e) { // Catch other potential errors
+            System.err.println("Unexpected error resolving tree SHA: " + e.getMessage());
+            throw new RuntimeException("Failed to resolve target tree SHA for " + ref + ":" + path, e);
+        }
+        // --- End logic to find target tree SHA ---
+
+        // --- Final ls-tree call using the resolved targetTreeSha ---
+        validateShaFormat(targetTreeSha); // Final validation
+        List<String> finalCommand = new ArrayList<>(List.of("mygit", "ls-tree"));
+        if (recursive) {
+            // Note: recursive flag needs careful handling with path traversal.
+            // Standard git 'ls-tree -r <commit>:<path>' applies recursion *within* the
+            // path.
+            // This implementation lists the target tree; recursion here will list
+            // *everything* under it.
+            // May need adjustment depending on desired recursive behavior when path is
+            // specified.
+            // For now, let's assume recursion applies to the final target tree.
+            if (path != null && !path.isEmpty()) {
+                System.err.println(
+                        "Warning: Recursive listing (-r) combined with a specific path might behave differently than standard git.");
+            }
+            finalCommand.add("-r");
+        }
+        finalCommand.add(targetTreeSha); // Use the final calculated tree SHA
+
+        System.out.println("Executing final ls-tree command: " + String.join(" ", finalCommand)); // Debug log
+
+        GitCommandExecutor.CommandResult result = commandExecutor.execute(repoPath.toString(), finalCommand);
 
         if (!result.isSuccess()) {
-            if (result.stderr.contains("Not a valid object name") || result.stderr.contains("not a tree")) {
-                throw new IllegalArgumentException("Invalid reference or path: " + treeIsh);
+            // Handle case where the resolved targetTreeSha itself is somehow invalid
+            // (unlikely if traversal worked)
+            if (result.stderr.contains("Not a valid object name")) {
+                throw new IllegalArgumentException("Resolved target tree SHA is invalid: " + targetTreeSha);
             }
-            throw new RuntimeException("mygit ls-tree failed for " + repoName + "/" + treeIsh + ": " + result.stderr);
+            throw new RuntimeException("mygit ls-tree failed for final tree " + targetTreeSha + ": " + result.stderr);
         }
 
-        return parserService.parseLsTreeOutput(result.stdout);
+        List<FileInfo> files = parserService.parseLsTreeOutput(result.stdout);
+
+        // If recursive and a path was given, we need to adjust the paths in FileInfo
+        // This is complex as list_tree_recursive in C++ adds the prefix.
+        // Let's skip path adjustment for recursive + path for now, it will show full
+        // paths from repo root.
+
+        // Sort directories first
+        if (files != null) {
+            Collections.sort(files, (a, b) -> {
+                if (a.getType().equals(b.getType())) {
+                    return a.getName().compareTo(b.getName());
+                }
+                return "tree".equals(a.getType()) ? -1 : 1; // trees first
+            });
+        }
+
+        return files;
     }
 
     public String getFileContent(String repoName, String ref, String filePath)
             throws IOException, InterruptedException {
         Path repoPath = getValidatedRepoPath(repoName);
-        String treeIsh = buildTreeIsh(ref, filePath);
-        List<String> lsTreeCommand = List.of("mygit", "ls-tree", treeIsh);
-        GitCommandExecutor.CommandResult lsResult = commandExecutor.execute(repoPath.toString(), lsTreeCommand);
-
-        if (!lsResult.isSuccess() || lsResult.stdout.isBlank()) {
-            throw new IllegalArgumentException("File not found at specified ref/path: " + repoName + "/" + treeIsh);
+        validateRefName(ref);
+        if (filePath == null || filePath.trim().isEmpty()) {
+            throw new IllegalArgumentException("File path cannot be empty.");
         }
 
-        String blobSha = null;
-        String objectType = null;
-        for (String line : lsResult.stdout.lines().collect(Collectors.toList())) {
-            String[] parts = line.split("\\s+", 4);
-            if (parts.length == 4) {
-                objectType = parts[1];
-                blobSha = parts[2];
-                break;
+        // 1. Resolve ref to commit SHA
+        String commitSha = resolveReference(repoName, ref); // Uses rev-parse
+
+        // 2. Get root tree SHA from commit
+        CommitInfo commitDetails = getCommitDetails(repoName, commitSha); // Uses cat-file -p commit
+        String currentTreeSha = commitDetails.getTree();
+        if (currentTreeSha == null) {
+            throw new RuntimeException("Could not find root tree for commit: " + commitSha);
+        }
+
+        // 3. Traverse path components to find the final tree SHA
+        List<String> pathComponents = Arrays.asList(filePath.split("/"));
+        String fileName = pathComponents.get(pathComponents.size() - 1);
+
+        // Loop through directory components (all except the last one, which is the
+        // filename)
+        for (int i = 0; i < pathComponents.size() - 1; i++) {
+            String dirName = pathComponents.get(i);
+            validateShaFormat(currentTreeSha); // Validate before using in command
+
+            List<String> lsTreeCommand = List.of("mygit", "ls-tree", currentTreeSha);
+            GitCommandExecutor.CommandResult lsResult = commandExecutor.execute(repoPath.toString(), lsTreeCommand);
+
+            if (!lsResult.isSuccess()) {
+                throw new RuntimeException("mygit ls-tree failed for tree " + currentTreeSha + ": " + lsResult.stderr);
             }
+
+            List<FileInfo> entries = parserService.parseLsTreeOutput(lsResult.stdout);
+            Optional<FileInfo> dirEntry = entries.stream()
+                    .filter(e -> e.getName().equals(dirName) && "tree".equals(e.getType()))
+                    .findFirst();
+
+            if (dirEntry.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "Directory not found in path: " + dirName + " within tree " + currentTreeSha);
+            }
+            currentTreeSha = dirEntry.get().getSha(); // Update to the SHA of the subdirectory tree
         }
 
-        if (blobSha == null || !"blob".equals(objectType)) {
-            throw new IllegalArgumentException("Path does not point to a file (blob): " + repoName + "/" + treeIsh);
-        }
-        validateShaFormat(blobSha);
+        // 4. Find the file blob SHA in the final directory tree
+        validateShaFormat(currentTreeSha); // Validate before using in command
+        List<String> finalLsTreeCommand = List.of("mygit", "ls-tree", currentTreeSha);
+        GitCommandExecutor.CommandResult finalLsResult = commandExecutor.execute(repoPath.toString(),
+                finalLsTreeCommand);
 
+        if (!finalLsResult.isSuccess()) {
+            throw new RuntimeException(
+                    "mygit ls-tree failed for final tree " + currentTreeSha + ": " + finalLsResult.stderr);
+        }
+
+        List<FileInfo> finalEntries = parserService.parseLsTreeOutput(finalLsResult.stdout);
+        Optional<FileInfo> fileEntry = finalEntries.stream()
+                .filter(e -> e.getName().equals(fileName) && "blob".equals(e.getType()))
+                .findFirst();
+
+        if (fileEntry.isEmpty()) {
+            throw new IllegalArgumentException("File not found: " + fileName + " in tree " + currentTreeSha);
+        }
+        String blobSha = fileEntry.get().getSha();
+        validateShaFormat(blobSha); // Validate the final blob SHA
+
+        // 5. Get blob content using cat-file
         List<String> catFileCommand = List.of("mygit", "cat-file", "-p", blobSha);
         GitCommandExecutor.CommandResult catResult = commandExecutor.execute(repoPath.toString(), catFileCommand);
 
         if (!catResult.isSuccess()) {
-            throw new RuntimeException("mygit cat-file failed for blob " + blobSha + ": " + catResult.stderr);
+            throw new RuntimeException("mygit cat-file -p failed for blob " + blobSha + ": " + catResult.stderr);
         }
 
         return parserService.parseCatFilePrettyPrintOutput(catResult.stdout);

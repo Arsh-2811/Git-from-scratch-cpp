@@ -93,6 +93,9 @@ public class GitCommandExecutor {
         stdoutReader.join(1000);
         stderrReader.join(1000);
 
+        System.out.println("Stdout : " + stdoutBuilder.toString());
+        System.out.println("Stderr : " + stderrBuilder.toString());
+
         if(!finished){
             process.destroyForcibly();
             log.error("Command timed out: {}", String.join(" ", sanitizedArgs));
