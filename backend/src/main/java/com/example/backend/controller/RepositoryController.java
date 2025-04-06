@@ -2,44 +2,36 @@ package com.example.backend.controller;
 
 import java.util.List;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import com.example.backend.dto.FileInfo;
-import com.example.backend.service.RepositoryService;
+import com.example.backend.service.ViewService;
 
 @RestController
+@RequestMapping("/api/repos")
 public class RepositoryController {
-    public RepositoryService repositoryService;
+    @Autowired
+    private ViewService viewService;
 
-    public RepositoryController(RepositoryService repositoryService){
-        this.repositoryService = repositoryService;
-    }
-
-    @GetMapping("/")
-    public String baseMethod() {
-        return "Welcome to the backend!";
-    }
-    
-    @GetMapping("/getAllRepositories")
-    public List<String> getAllRepositories(){
-        return repositoryService.getRepositoriesWithMygit();
-    }
-
-    @GetMapping("/test/{repoName}")
-    public ResponseEntity<List<FileInfo>> listTreeContents(
-        @PathVariable String repoName,
-        @RequestParam(required = false, defaultValue = "HEAD") String ref,
-        @RequestParam(required = false, defaultValue = "false") boolean  recursive) {
-
+    /**
+     * @Description: Lists all available 'mygit' repository names.
+     * @HTTPMethod: GET
+     * @Path: /api/repos
+     * @ReturnType: List<String> - A list of repository names.
+     * @MygitCommand: N/A (Backend scans directory)
+     */
+    @GetMapping
+    public ResponseEntity<List<String>> getAllRepositories() {
         try {
-            List<FileInfo> contents = repositoryService.lsTree(repoName, ref, recursive);
-            return ResponseEntity.ok(contents);
+            List<String> repoNames = viewService.findAllRepositoryNames();
+            return ResponseEntity.ok(repoNames);
         } catch (Exception e) {
+            // Proper error handling recommended (e.g., using @ControllerAdvice)
+            System.err.println("Error fetching repository list: " + e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
         }
     }
