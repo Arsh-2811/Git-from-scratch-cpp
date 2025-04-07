@@ -687,103 +687,184 @@ int handle_status() {
     return 0;
 }
 
+std::string read_current_branch_or_commit() {
+    std::string head_content = read_head();
+    if (head_content.rfind("ref: refs/heads/", 0) == 0) {
+        return head_content.substr(16); // Length of "ref: refs/heads/"
+    } else if (head_content.length() == 40 && head_content.find_first_not_of("0123456789abcdef") == std::string::npos) {
+        return "HEAD detached at " + head_content.substr(0, 7);
+    }
+    return "(unknown)";
+}
 
 // --- log ---
-int handle_log(bool graph_mode) {
-    std::optional<std::string> head_sha_opt = resolve_ref("HEAD");
-    if (!head_sha_opt) {
-        std::cerr << "fatal: your current branch '...' does not have any commits yet" << std::endl; // Improve branch name
+int handle_log(bool graph_mode, const std::optional<std::string>& start_ref_name_opt) {
+    std::string ref_to_resolve = "HEAD";
+    if (start_ref_name_opt) {
+        ref_to_resolve = *start_ref_name_opt;
+    }
+
+    // Resolve the starting reference to a commit SHA
+    std::optional<std::string> start_sha_opt = resolve_ref(ref_to_resolve);
+    if (!start_sha_opt) {
+        // Give a more specific error message depending on whether a ref was provided
+        if (start_ref_name_opt) {
+             std::cerr << "fatal: ambiguous argument '" << ref_to_resolve << "': unknown revision or path not in the working tree." << std::endl;
+        } else {
+             // Default case (HEAD likely unborn)
+             std::cerr << "fatal: your current branch '" << read_current_branch_or_commit() /* Helper needed */ << "' does not have any commits yet" << std::endl;
+        }
         return 1;
     }
 
-    std::string start_sha = *head_sha_opt;
+    std::string start_sha = *start_sha_opt;
     std::set<std::string> visited; // Prevent infinite loops and re-processing
     std::queue<std::string> q;     // Use queue for breadth-first-like traversal
     std::map<std::string, std::vector<std::string>> adj; // For graph edges: child -> {parents}
-     std::map<std::string, std::string> node_labels; // For graph node labels
+    std::map<std::string, std::string> node_labels; // For graph node labels
+    // Store commits in order for non-graph mode (BFS might mess order)
+    std::vector<std::pair<std::string, CommitObject>> commit_log_order;
+    std::set<std::string> added_to_log_order; // Ensure unique entries in log order
 
-    q.push(start_sha);
-    visited.insert(start_sha);
 
-    while (!q.empty()) {
-        std::string current_sha = q.front();
-        q.pop();
+    // --- Use a modified traversal that respects parent order for non-graph mode ---
+    std::vector<std::string> commit_stack; // Use a stack for DFS-like traversal for chronological order
+    commit_stack.push_back(start_sha);
+    visited.insert(start_sha); // Mark as visited *before* processing
 
+
+    // --- Collect all reachable commits first (for graph mode and ordering) ---
+    std::queue<std::string> bfs_q;
+    std::set<std::string> reachable_commits;
+    bfs_q.push(start_sha);
+    reachable_commits.insert(start_sha);
+
+    while(!bfs_q.empty()){
+        std::string current_sha_bfs = bfs_q.front();
+        bfs_q.pop();
         try {
-            ParsedObject parsed_obj = read_object(current_sha);
-            if (parsed_obj.type != "commit") {
-                std::cerr << "Warning: Expected commit object, got " << parsed_obj.type << " for SHA " << current_sha << std::endl;
-                continue;
-            }
-            const auto& commit = std::get<CommitObject>(parsed_obj.data);
-
-            // --- Regular Log Output ---
-            if (!graph_mode) {
-                 std::cout << "\033[33mcommit " << current_sha << "\033[0m" << std::endl; // Yellow SHA
-                  if (commit.parent_sha1s.size() > 1) {
-                     std::cout << "Merge:";
-                     for(size_t i = 0; i < commit.parent_sha1s.size(); ++i) {
-                          std::cout << " " << commit.parent_sha1s[i].substr(0, 7);
-                     }
-                     std::cout << std::endl;
+            ParsedObject parsed_obj = read_object(current_sha_bfs);
+             if (parsed_obj.type == "commit") {
+                  const auto& commit = std::get<CommitObject>(parsed_obj.data);
+                  for(const auto& p : commit.parent_sha1s) {
+                      if(reachable_commits.find(p) == reachable_commits.end()) {
+                           reachable_commits.insert(p);
+                           bfs_q.push(p);
+                      }
                   }
-                 std::cout << "Author: " << commit.author_info << std::endl;
-                 // Could parse date/time for nicer formatting
-                 std::cout << "Date:   " << commit.committer_info.substr(commit.committer_info.find_last_of('>') + 2) << std::endl; // Simple date extraction
-                 std::cout << std::endl;
-                 // Indent message
-                 std::istringstream message_stream(commit.message);
-                 std::string msg_line;
-                 while(std::getline(message_stream, msg_line)) {
-                     std::cout << "    " << msg_line << std::endl;
-                 }
-                 std::cout << std::endl;
-            }
+             }
+        } catch (...) {/* Ignore errors during collection */}
+    }
+    // --- End collection ---
 
-             // --- Graph Mode Data Collection ---
-             if (graph_mode) {
-                 std::ostringstream label_ss;
-                 label_ss << current_sha.substr(0, 7) << "\\n"
-                          << commit.author_info.substr(0, commit.author_info.find('<')) << "\\n" // Just name
-                          << commit.message.substr(0, commit.message.find('\n')); // First line of message
-                 node_labels[current_sha] = label_ss.str();
 
-                 for (const auto& parent_sha : commit.parent_sha1s) {
-                     adj[current_sha].push_back(parent_sha); // Store edge: current -> parent
-                     if (visited.find(parent_sha) == visited.end()) {
-                         visited.insert(parent_sha);
-                         q.push(parent_sha);
-                     }
-                 }
-                  // Also add commits with no parents (root) to adjacency list
-                  if (commit.parent_sha1s.empty() && adj.find(current_sha) == adj.end()) {
-                       adj[current_sha] = {};
-                  }
-             } else {
-                 // Add parents to queue for regular log
-                 for (const auto& parent_sha : commit.parent_sha1s) {
-                      if (visited.find(parent_sha) == visited.end()) {
-                         visited.insert(parent_sha);
-                         q.push(parent_sha);
+    // --- Process commits using DFS stack for chronological display ---
+    while (!commit_stack.empty()) {
+        std::string current_sha = commit_stack.back(); // Peek
+        // If not visited for processing yet, process it
+        if (added_to_log_order.find(current_sha) == added_to_log_order.end()) {
+            try {
+                ParsedObject parsed_obj = read_object(current_sha);
+                if (parsed_obj.type != "commit") {
+                    std::cerr << "Warning: Expected commit object, got " << parsed_obj.type << " for SHA " << current_sha << std::endl;
+                    commit_stack.pop_back(); // Remove non-commit from stack
+                    continue;
+                }
+                const auto& commit = std::get<CommitObject>(parsed_obj.data);
+
+                // Add to log order list
+                commit_log_order.push_back({current_sha, commit});
+                added_to_log_order.insert(current_sha);
+
+
+                 // --- Graph Mode Data Collection (still needed regardless of display order) ---
+                if (graph_mode) {
+                    std::ostringstream label_ss;
+                    label_ss << current_sha.substr(0, 7) << "\\n"
+                             << commit.author_info.substr(0, commit.author_info.find('<')) << "\\n" // Just name
+                             << commit.message.substr(0, commit.message.find('\n')); // First line of message
+                    node_labels[current_sha] = label_ss.str();
+
+                    for (const auto& parent_sha : commit.parent_sha1s) {
+                        adj[current_sha].push_back(parent_sha); // Store edge: current -> parent
+                    }
+                    // Add root commits to adjacency list keys
+                    if (commit.parent_sha1s.empty() && adj.find(current_sha) == adj.end()) {
+                         adj[current_sha] = {};
+                    }
+                }
+
+                // Check if all parents have been processed (or are unvisited)
+                bool all_parents_done = true;
+                // Push unvisited parents onto the stack IN REVERSE ORDER (to process first parent first)
+                for (int i = commit.parent_sha1s.size() - 1; i >= 0; --i) {
+                     const auto& parent_sha = commit.parent_sha1s[i];
+                     // Only consider parents reachable from the original start_sha
+                      if (reachable_commits.count(parent_sha)) {
+                          if (visited.find(parent_sha) == visited.end()) {
+                             visited.insert(parent_sha);
+                             commit_stack.push_back(parent_sha);
+                             all_parents_done = false; // Need to process this parent first
+                          }
                       }
                  }
-             }
+
+                 // If all reachable parents are done, we can pop this commit
+                 if(all_parents_done) {
+                      commit_stack.pop_back();
+                 }
 
 
-        } catch (const std::exception& e) {
-            std::cerr << "Error reading commit object " << current_sha << ": " << e.what() << std::endl;
-             // Continue processing other commits in the queue? Or stop?
-             // Let's continue.
+            } catch (const std::exception& e) {
+                std::cerr << "Error reading commit object " << current_sha << ": " << e.what() << std::endl;
+                commit_stack.pop_back(); // Pop problematic commit
+            }
+        } else {
+             // Already processed, just pop
+             commit_stack.pop_back();
         }
-    }
+
+    } // End while (!commit_stack.empty())
 
 
-     // --- Graph Mode Output ---
+     // --- Regular Log Output (Iterate through collected log order) ---
+     if (!graph_mode) {
+         for (const auto& log_entry : commit_log_order) {
+             const std::string& current_sha = log_entry.first;
+             const CommitObject& commit = log_entry.second;
+
+             std::cout << "\033[33mcommit " << current_sha << "\033[0m" << std::endl; // Yellow SHA
+             if (commit.parent_sha1s.size() > 1) {
+                 std::cout << "Merge:";
+                 for(size_t i = 0; i < commit.parent_sha1s.size(); ++i) {
+                      std::cout << " " << commit.parent_sha1s[i].substr(0, 7);
+                 }
+                 std::cout << std::endl;
+             }
+             std::cout << "Author: " << commit.author_info << std::endl;
+             // Could parse date/time for nicer formatting
+            //  std::cout << "Date:   " << get_commit_date_from_info(commit.committer_info) << std::endl; // Use helper
+             std::cout << std::endl;
+             // Indent message
+             std::istringstream message_stream(commit.message);
+             std::string msg_line;
+             while(std::getline(message_stream, msg_line)) {
+                 std::cout << "    " << msg_line << std::endl;
+             }
+             std::cout << std::endl;
+         }
+     }
+
+
+     // --- Graph Mode Output (Using collected adj and labels) ---
      if (graph_mode) {
          std::cout << "digraph git_log {" << std::endl;
-         std::cout << "  node [shape=box, style=rounded];" << std::endl;
+         std::cout << "  rankdir=TB;" << std::endl; // Top to bottom is more common for git log graphs
+         std::cout << "  node [shape=box, style=rounded, fontname=\"Courier New\", fontsize=10];" << std::endl; // Monospace font maybe
+         std::cout << "  edge [arrowhead=none];" << std::endl; // Edges represent parentage, no arrows needed
 
-         // Print nodes
+
+         // Print nodes (only those reachable and added to labels)
          for (const auto& pair : node_labels) {
               std::cout << "  \"" << pair.first << "\" [label=\"" << pair.second << "\"];" << std::endl;
          }
@@ -791,39 +872,74 @@ int handle_log(bool graph_mode) {
          // Print edges
          for (const auto& pair : adj) {
              const std::string& child = pair.first;
-             for (const std::string& parent : pair.second) {
-                  std::cout << "  \"" << child << "\" -> \"" << parent << "\";" << std::endl;
-             }
+              // Ensure the child node was actually created (it should be if in adj)
+              if (node_labels.count(child)) {
+                 for (const std::string& parent : pair.second) {
+                      // Ensure the parent node was also created before drawing edge
+                      if (node_labels.count(parent)) {
+                          std::cout << "  \"" << child << "\" -> \"" << parent << "\";" << std::endl;
+                      }
+                 }
+              }
          }
 
-          // Add branch pointers
-          for (const std::string& branch : list_branches()) {
-              std::optional<std::string> branch_sha = resolve_ref(branch);
-              if (branch_sha && node_labels.count(*branch_sha)) { // Only point if commit was visited
-                   std::cout << "  \"branch_" << branch << "\" [label=\"" << branch << "\", shape=box, style=filled, color=lightblue];" << std::endl;
-                   std::cout << "  \"branch_" << branch << "\" -> \"" << *branch_sha << "\";" << std::endl;
+         // Add branch pointers
+         std::map<std::string, std::vector<std::string>> commits_to_branches;
+         for (const std::string& branch : list_branches()) {
+             std::optional<std::string> branch_sha = resolve_ref(branch);
+             // Only point if commit was visited *and is part of the requested history*
+             if (branch_sha && node_labels.count(*branch_sha)) {
+                 commits_to_branches[*branch_sha].push_back(branch);
+             }
+         }
+         for(const auto& pair : commits_to_branches) {
+              std::string sha = pair.first;
+              std::string combined_label;
+              for(size_t i=0; i < pair.second.size(); ++i) {
+                   combined_label += (i > 0 ? ", " : "") + pair.second[i];
               }
-          }
-          // Add tag pointers (simplified - doesn't dereference annotated tags fully here)
-          for (const std::string& tag : list_tags()) {
-               std::optional<std::string> tag_sha = resolve_ref(tag); // resolve_ref handles dereferencing
-               if (tag_sha && node_labels.count(*tag_sha)) {
-                   std::cout << "  \"tag_" << tag << "\" [label=\"" << tag << "\", shape=ellipse, style=filled, color=lightyellow];" << std::endl;
-                   std::cout << "  \"tag_" << tag << "\" -> \"" << *tag_sha << "\";" << std::endl;
-               }
-          }
-           // Add HEAD pointer
-           std::string head_val = read_head();
-           std::optional<std::string> head_target_sha = resolve_ref("HEAD");
-            if (head_target_sha && node_labels.count(*head_target_sha)) {
-                 std::cout << "  \"HEAD\" [shape=box, style=filled, color=lightgreen];" << std::endl;
-                 std::cout << "  \"HEAD\" -> \"" << *head_target_sha << "\";" << std::endl;
-            }
+              std::string node_name = "ref_" + sha + "_branches"; // Unique node name
+              std::cout << "  \"" << node_name << "\" [label=\"" << combined_label << "\", shape=box, style=\"filled,rounded\", color=lightblue];" << std::endl;
+              std::cout << "  \"" << node_name << "\" -> \"" << sha << "\" [style=dashed, arrowhead=none];" << std::endl;
+         }
+
+
+         // Add tag pointers (simplified)
+         std::map<std::string, std::vector<std::string>> commits_to_tags;
+         for (const std::string& tag : list_tags()) {
+             std::optional<std::string> tag_sha = resolve_ref(tag); // resolve_ref handles dereferencing
+             if (tag_sha && node_labels.count(*tag_sha)) {
+                  commits_to_tags[*tag_sha].push_back(tag);
+             }
+         }
+         for(const auto& pair : commits_to_tags) {
+              std::string sha = pair.first;
+              std::string combined_label;
+              for(size_t i=0; i < pair.second.size(); ++i) {
+                   combined_label += (i > 0 ? ", " : "") + pair.second[i];
+              }
+              std::string node_name = "ref_" + sha + "_tags"; // Unique node name
+              std::cout << "  \"" << node_name << "\" [label=\"" << combined_label << "\", shape=ellipse, style=filled, color=lightyellow];" << std::endl;
+              std::cout << "  \"" << node_name << "\" -> \"" << sha << "\" [style=dashed, arrowhead=none];" << std::endl;
+         }
+
+
+         // Add HEAD pointer
+         std::string head_content = read_head();
+         std::optional<std::string> head_target_sha = resolve_ref("HEAD");
+         if (head_target_sha && node_labels.count(*head_target_sha)) {
+             std::string head_label = "HEAD";
+             if (head_content.rfind("ref: refs/heads/", 0) == 0) {
+                  head_label += " -> " + head_content.substr(16);
+             }
+             std::string node_name = "ref_HEAD";
+             std::cout << "  \"" << node_name << "\" [label=\"" << head_label << "\", shape=box, style=filled, color=lightgreen];" << std::endl;
+             std::cout << "  \"" << node_name << "\" -> \"" << *head_target_sha << "\" [style=dashed, arrowhead=none];" << std::endl;
+         }
 
 
          std::cout << "}" << std::endl;
      }
-
 
     return 0;
 }

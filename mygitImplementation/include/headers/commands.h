@@ -9,7 +9,7 @@ int handle_add(const std::vector<std::string>& files_to_add);
 int handle_rm(const std::vector<std::string>& files_to_remove, bool cached_mode);
 int handle_commit(const std::string& message);
 int handle_status();
-int handle_log(bool graph_mode);
+int handle_log(bool graph_mode, const std::optional<std::string>& start_ref_name_opt);
 
 int handle_branch(const std::vector<std::string>& args);
 int handle_tag(const std::vector<std::string>& args);

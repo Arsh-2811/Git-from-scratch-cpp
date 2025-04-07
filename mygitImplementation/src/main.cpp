@@ -15,7 +15,7 @@ void print_usage() {
     std::cerr << "                    Remove files from the working tree and from the index" << std::endl;
     std::cerr << "  commit -m <msg>   Record changes to the repository" << std::endl;
     std::cerr << "  status            Show the working tree status" << std::endl;
-    std::cerr << "  log [--graph]     Show commit logs" << std::endl;
+    std::cerr << "  log [<ref>] [--graph]" << std::endl;
     std::cerr << "  branch            List, create, or delete branches" << std::endl;
     std::cerr << "  branch <name> [<start>] Create a new branch" << std::endl;
     // std::cerr << "  branch -d <name>  Delete a branch" << std::endl; // Add delete later
@@ -101,13 +101,30 @@ int main(int argc, char* argv[]) {
             return handle_status();
         }
         else if (command == "log") {
-            bool graph = false;
-            if (argc == 3 && std::string(argv[2]) == "--graph") {
-                graph = true;
-            } else if (argc != 2) {
-                std::cerr << "Usage: mygit log [--graph]" << std::endl; return 1;
+            bool graph_mode = false;
+            std::optional<std::string> start_ref_opt = std::nullopt;
+
+            // Iterate through arguments after "log" (index 2 onwards)
+            for (int i = 2; i < argc; ++i) {
+                std::string arg = argv[i];
+                if (arg == "--graph") {
+                    if (graph_mode) { // Check for duplicate --graph flag
+                        std::cerr << "Error: Duplicate --graph option provided." << std::endl;
+                        print_usage(); // Show general usage
+                        return 1;
+                    }
+                    graph_mode = true;
+                } else {
+                    // Assume it's the reference argument
+                    if (start_ref_opt) { // Check if a ref has already been provided
+                        std::cerr << "Error: Too many non-option arguments provided for log." << std::endl;
+                        std::cerr << "Usage: mygit log [<ref>] [--graph]" << std::endl;
+                        return 1;
+                    }
+                    start_ref_opt = arg; // Store the potential reference name
+                }
             }
-            return handle_log(graph);
+            return handle_log(graph_mode, start_ref_opt);
         } else if (command == "branch") {
             return handle_branch(collect_args(2, argc, argv));
         } else if (command == "tag") {
