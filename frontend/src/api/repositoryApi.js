@@ -1,4 +1,5 @@
 // src/api/repositoryApi.js
+
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8080';
 
 const handleResponse = async (response) => {
@@ -6,16 +7,17 @@ const handleResponse = async (response) => {
         let errorMsg = `HTTP error! Status: ${response.status}`;
         let errorData = null;
         try {
-            errorData = await response.json(); // Try to get JSON error details
-            errorMsg = errorData?.message || errorData?.error || errorMsg;
+            errorData = await response.json();
+            errorMsg = errorData?.message || errorData?.error || `Error ${response.status}`;
         } catch (e) {
-            try { // Fallback to text if JSON fails
-                errorMsg = await response.text() || errorMsg;
-            } catch (textErr) { /* ignore */ }
+             try {
+                  const textError = await response.text();
+                  if(textError) errorMsg = textError;
+             } catch(textErr) { /* ignore */ }
         }
         const error = new Error(errorMsg);
         error.status = response.status;
-        error.data = errorData; // Attach full error data if available
+        error.data = errorData;
         throw error;
     }
     // Handle different content types
@@ -23,65 +25,64 @@ const handleResponse = async (response) => {
     if (contentType && contentType.includes("application/json")) {
         return response.json();
     }
-    if (contentType && contentType.includes("text/plain")) {
-        return response.text();
-    }
-    // Default or no content
-    return response.text(); // Or handle ArrayBuffer etc. if needed
+     if (contentType && contentType.includes("text/plain")) {
+         return response.text();
+     }
+    // Default or no content - try text as fallback
+    return response.text().catch(() => null); // Handle cases with no body gracefully
 };
 
 const fetchApi = (url, options = {}) => {
+    console.log(`[API Fetch] URL: ${url}, Options:`, options);
     return fetch(url, options).then(handleResponse);
 };
 
 // --- Repository ---
-export const getAllRepositories = () => fetchApi(`${API_BASE_URL}/api/repos`);
+export const getAllRepositories = (options = {}) => fetchApi(`${API_BASE_URL}/api/repos`, options);
 
 // --- Branches ---
-export const getBranches = (repoName) => fetchApi(`${API_BASE_URL}/api/repos/${repoName}/branches`);
+export const getBranches = (repoName, options = {}) => fetchApi(`${API_BASE_URL}/api/repos/${repoName}/branches`, options);
 
 // --- Tags ---
-export const getTags = (repoName) => fetchApi(`${API_BASE_URL}/api/repos/${repoName}/tags`);
+export const getTags = (repoName, options = {}) => fetchApi(`${API_BASE_URL}/api/repos/${repoName}/tags`, options);
 
 // --- Code/Tree ---
-export const getTree = (repoName, ref = 'HEAD', path = '', recursive = false) => {
+// Note: Path should be the raw path, encoding handled here
+export const getTree = (repoName, ref = 'HEAD', path = '', recursive = false, options = {}) => {
     const encodedRef = encodeURIComponent(ref);
-    const urlPath = path ? `/${encodeURIComponent(path)}` : '';
+    // Encode path segments individually, handle root path
+    const encodedPath = path ? path.split('/').map(encodeURIComponent).join('/') : '';
+    const urlPath = encodedPath ? `/${encodedPath}` : ''; // Prepend slash only if path exists
     const url = `${API_BASE_URL}/api/repos/${repoName}/tree${urlPath}?ref=${encodedRef}&recursive=${recursive}`;
-    return fetchApi(url);
+    return fetchApi(url, options);
 };
 
-export const getBlobContent = (repoName, ref = 'HEAD', filePath, options = {}) => { // Accept options
+// Note: filePath should be the raw path, encoding handled here
+export const getBlobContent = (repoName, ref = 'HEAD', filePath, options = {}) => {
     const encodedRef = encodeURIComponent(ref);
-    // --- More Robust Path Encoding ---
-    // Ensure filePath is split and each part encoded individually
-    const pathParts = filePath.split('/').map(part => encodeURIComponent(part));
-    const encodedPath = pathParts.join('/'); // Re-join encoded segments
-    // --- End Robust Encoding ---
-
-    const url = `${API_BASE_URL}/api/repos/${repoName}/blob/${encodedPath}?ref=${encodedRef}`;
-    console.log("Fetching Blob URL:", url, "with options:", options); // Log options including signal
-    return fetchApi(url, options); // Pass options (including signal) to fetchApi
+    const encodedFilePath = filePath.split('/').map(encodeURIComponent).join('/'); // Encode each part
+    const url = `${API_BASE_URL}/api/repos/${repoName}/blob/${encodedFilePath}?ref=${encodedRef}`;
+    return fetchApi(url, options);
 };
 
 // --- Commits ---
-export const getCommits = (repoName, ref = 'HEAD', graph = false, limit, skip) => {
+export const getCommits = (repoName, ref = 'HEAD', graph = false, limit, skip, options = {}) => {
     const params = new URLSearchParams({ ref, graph });
     if (limit !== undefined) params.append('limit', limit);
     if (skip !== undefined) params.append('skip', skip);
-    return fetchApi(`${API_BASE_URL}/api/repos/${repoName}/commits?${params.toString()}`);
+    return fetchApi(`${API_BASE_URL}/api/repos/${repoName}/commits?${params.toString()}`, options);
 };
 
-export const getCommitDetails = (repoName, commitSha) => {
-    return fetchApi(`${API_BASE_URL}/api/repos/${repoName}/commits/${encodeURIComponent(commitSha)}`);
+export const getCommitDetails = (repoName, commitSha, options = {}) => {
+    return fetchApi(`${API_BASE_URL}/api/repos/${repoName}/commits/${encodeURIComponent(commitSha)}`, options);
 };
 
 // --- Objects ---
-export const resolveRef = (repoName, ref) => {
-    return fetchApi(`${API_BASE_URL}/api/repos/${repoName}/objects/_resolve?ref=${encodeURIComponent(ref)}`);
+export const resolveRef = (repoName, ref, options = {}) => {
+    return fetchApi(`${API_BASE_URL}/api/repos/${repoName}/objects/_resolve?ref=${encodeURIComponent(ref)}`, options);
 };
 
-export const getObjectInfo = (repoName, objectSha, operation) => {
+export const getObjectInfo = (repoName, objectSha, operation, options = {}) => {
     // Operation 't' or 's'
-    return fetchApi(`${API_BASE_URL}/api/repos/${repoName}/objects/${encodeURIComponent(objectSha)}?op=${operation}`);
+    return fetchApi(`${API_BASE_URL}/api/repos/${repoName}/objects/${encodeURIComponent(objectSha)}?op=${operation}`, options);
 };
