@@ -22,32 +22,38 @@ Think of it as building your own functional model of Git to truly appreciate how
 
 ## Architecture Overview
 
-The project follows a clear separation of concerns:
+The project follows a clear separation of concerns, with interactions flowing as follows:
 
-```mermaid
-graph TD
-    A[Browser (User)] -- HTTP Requests --> B(Frontend - React SPA);
-    B -- API Calls /api/... --> C{Backend - Java Spring Boot};
-    C -- Executes command --> D[mygit C++ Executable];
-    D -- Reads/Writes --> E(Git Repository On Disk (.mygit));
-    C -- Parses stdout/stderr --> B;
-    B -- Renders UI --> A;
+1.  **Browser (User Interaction):** The user interacts with the **Frontend (React SPA)** loaded in their web browser.
+    *   *Example Action: Clicking "View Commits" for the 'main' branch.*
 
-    style D fill:#f9f,stroke:#333,stroke-width:2px
-    style C fill:#bbf,stroke:#333,stroke-width:2px
-    style B fill:#9cf,stroke:#333,stroke-width:2px
-```
+2.  **Frontend (React SPA):** Translates user actions into API requests to the backend.
+    *   *Sends Request: `GET /api/repos/my-repo/commits?ref=main`*
 
-1.  **User** interacts with the **Frontend** React application in their browser.
-2.  **Frontend** makes API calls to the **Backend** (e.g., to list branches, view commits).
-3.  **Backend** receives the request, identifies the target repository, and constructs the appropriate `mygit` command (e.g., `mygit log --graph HEAD`).
-4.  **Backend** executes the compiled **`mygit` C++ program** as a separate process, passing necessary arguments and the repository path.
-5.  **`mygit`** performs the requested Git operation by directly interacting with the repository's `.mygit` directory on the filesystem (reading objects, updating refs, etc.).
-6.  **`mygit`** prints its output (e.g., commit list, SHA-1, file content) to standard output or errors to standard error.
-7.  **Backend** captures the output/errors from the `mygit` process.
-8.  **Backend** parses the raw text output into structured Java DTOs (Data Transfer Objects).
-9.  **Backend** sends the DTOs back to the **Frontend** as JSON responses.
-10. **Frontend** receives the JSON data and renders the user interface accordingly.
+3.  **Backend (Java Spring Boot):** Receives the API request, identifies the target repository, and determines the appropriate `mygit` command.
+    *   *Determines Command: `mygit log main` for the specified repository path.*
+
+4.  **Backend executes `mygit`:** Runs the compiled **`mygit` C++ Executable** as a separate operating system process.
+    *   *Process Call: `/path/to/mygit log main --repo-path /path/to/repos/my-repo`*
+
+5.  **`mygit` C++ Executable:** Performs the requested Git operation by directly reading from and writing to the **Git Repository on Disk (`.mygit` directory)**.
+    *   *Action: Reads commit objects, follows parent pointers.*
+
+6.  **`mygit` produces output:** Prints results (like commit details) to standard output (`stdout`) and errors to standard error (`stderr`).
+    *   *Output: Lines of text representing the commit log.*
+
+7.  **Backend captures output:** Reads the `stdout` and `stderr` streams from the completed `mygit` process.
+
+8.  **Backend parses output:** Converts the raw text output into structured Java objects (DTOs).
+    *   *Transformation: Creates `List<CommitInfo>` objects from the log text.*
+
+9.  **Backend sends response:** Serializes the Java DTOs into JSON and sends them back to the frontend as the HTTP response body.
+    *   *Sends Response: `HTTP 200 OK` with JSON payload containing commit data.*
+
+10. **Frontend renders UI:** Receives the JSON data and updates the user interface to display the information (e.g., the commit list).
+    *   *Updates View: Shows the commit history to the user.*
+
+*(This flow ensures that the core Git logic remains encapsulated within the C++ executable, while the Java backend handles API exposure and process management, and the React frontend provides the user interface.)*
 
 ## Features
 
@@ -91,7 +97,7 @@ graph TD
 | **Core Git Logic**  | C++ (C++17), CMake, zlib (for object compression)      |
 | **Backend API**     | Java (17+), Spring Boot 3.x, Maven, Jackson (JSON)     |
 | **Frontend UI**     | JavaScript, React 18.x, CSS, Fetch API (or Axios)      |
-| **Development**     | Git (ironically!), VS Code |
+| **Development**     | Git (ironically!), VS Code / IntelliJ / CLion, Terminal |
 
 ## Setup and Running
 
@@ -117,6 +123,7 @@ graph TD
     *   Run the Spring Boot application:
         ```bash
         cd backend
+        mvn clean install
         mvn spring-boot:run
         # The API will typically be available at http://localhost:8080
         cd ..
@@ -153,8 +160,6 @@ graph TD
 
 Contributions are welcome! If you'd like to help improve the project, please feel free to fork the repository, make your changes, and submit a pull request. For major changes, please open an issue first to discuss.
 
-*(Add more specific contribution guidelines if desired)*
-
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details (if you add one).
+This project is licensed under the MIT License.
