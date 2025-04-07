@@ -1,5 +1,7 @@
 package com.example.backend.controller;
 
+import java.io.IOException;
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -70,7 +72,7 @@ public class ObjectInspectionController {
          } catch (IllegalArgumentException e) { // Handles not found
              System.err.println("Bad request for cat-file: " + e.getMessage());
              return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
-         } catch (Exception e) {
+         } catch (IOException | InterruptedException e) {
             System.err.println("Error getting object info: " + e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
         }

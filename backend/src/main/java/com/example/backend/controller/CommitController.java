@@ -1,5 +1,6 @@
 package com.example.backend.controller;
 
+import java.io.IOException;
 import java.util.List;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -52,7 +53,7 @@ public class CommitController {
         } catch (IllegalArgumentException e) {
             System.err.println("Bad request for commit log: " + e.getMessage());
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(null); // Or 404
-        } catch (Exception e) {
+        } catch (IOException | InterruptedException e) {
             System.err.println("Error getting commit log: " + e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
         }
@@ -76,7 +77,7 @@ public class CommitController {
         } catch (IllegalArgumentException e) { // Handles not found as well via service logic
             System.err.println("Bad request for commit details: " + e.getMessage());
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
-        } catch (Exception e) {
+        } catch (IOException | InterruptedException e) {
             System.err.println("Error getting commit details: " + e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
         }

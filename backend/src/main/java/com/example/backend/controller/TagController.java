@@ -1,5 +1,6 @@
 package com.example.backend.controller;
 
+import java.io.IOException;
 import java.util.List;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -36,7 +37,7 @@ public class TagController {
          } catch (IllegalArgumentException e) {
              System.err.println("Bad request for tags: " + e.getMessage());
              return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(null); // Or 404
-         } catch (Exception e) {
+         } catch (IOException | InterruptedException e) {
             System.err.println("Error listing tags: " + e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
         }

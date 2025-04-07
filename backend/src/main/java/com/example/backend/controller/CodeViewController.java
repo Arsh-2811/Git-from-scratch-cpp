@@ -1,5 +1,6 @@
 package com.example.backend.controller;
 
+import java.io.IOException;
 import java.util.List;
 
 import org.springframework.beans.factory.annotation.Autowired; // Keep for extraction
@@ -54,7 +55,7 @@ public class CodeViewController {
         } catch (IllegalArgumentException e) {
             System.err.println("Bad request for tree contents: " + e.getMessage());
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(null);
-        } catch (Exception e) {
+        } catch (IOException | InterruptedException e) {
             System.err.println("Error getting tree contents: " + e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
         }
@@ -113,7 +114,7 @@ public class CodeViewController {
                  return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
             }
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(null);
-        } catch (Exception e) {
+        } catch (IOException | InterruptedException e) {
             System.err.println("Error getting file content: " + e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
         }

@@ -1,259 +1,160 @@
-# 🛠️ MyGit: Building Git from Scratch in C++ ✨
+# Git from Scratch++: A Deep Dive into Git Internals with C++ & Web UI
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) <!-- Optional: Choose a license -->
 
-A deep dive into the internals of Git by re-implementing its core functionalities from the ground up using C++17. This project is primarily an educational endeavor to understand how version control systems work under the hood.
+Welcome to **Git from Scratch++**! This project is an ambitious exploration into the core mechanics of the Git version control system. It features:
 
-**This is NOT intended to be a full replacement for the official Git**, but rather a learning tool and a demonstration of implementing complex system concepts.
+1.  **`mygit`**: A custom Git implementation written from the ground up in **C++**, focusing on understanding and replicating Git's fundamental object model, indexing, branching, and merging logic.
+2.  **Backend API**: A **Java Spring Boot** application that acts as a bridge, executing the `mygit` C++ command-line tool and exposing its functionality through a RESTful API.
+3.  **Frontend UI**: A **React** single-page application providing a web-based interface to interact with `mygit` repositories via the backend API, visualizing branches, commits, and file contents.
 
----
+**The primary goal is educational:** to demystify Git's internals by building a working subset of its features. It's a hands-on journey into blobs, trees, commits, the index, refs, and more.
 
-## 📚 Why Build Git Again?
+## Project Vision
 
-*   **Demystify Version Control:** To truly understand how Git tracks changes, manages branches, and stores history.
-*   **Hands-On Learning:** Gain practical experience with file system manipulation, hashing (SHA-1), data compression (Zlib), object storage, and graph traversal in C++.
-*   **C++ Practice:** Apply modern C++ techniques (C++17 filesystem, smart pointers, STL containers, etc.) to a substantial project.
-*   **Appreciation:** Develop a deeper appreciation for the elegance and efficiency of the real Git.
+Git is ubiquitous, yet its internal workings can seem opaque. This project aims to peel back the layers by:
 
----
+*   **Implementing Core Logic:** Rebuilding essential Git commands in C++ forces a deep understanding of the underlying data structures and algorithms.
+*   **Providing Accessible Interaction:** Wrapping the C++ core with a standard REST API (Java/Spring Boot) makes it usable by various clients.
+*   **Visualizing Git Concepts:** Offering a web UI (React) helps visualize commit history, branches, and repository structure, making abstract concepts more tangible.
 
-## ✨ Features Implemented
+Think of it as building your own functional model of Git to truly appreciate how the real thing works!
 
-This implementation currently supports a significant subset of core Git commands:
+## Architecture Overview
 
-**Repository Initialization:**
-*   `mygit init`: Creates the necessary `.mygit` directory structure (`objects`, `refs`, `HEAD`, etc.).
+The project follows a clear separation of concerns:
 
-**Basic Workflow:**
-*   `mygit add <file>...`: Stages changes from the working directory to the index. (Handles files, basic subdirectory paths).
-*   `mygit rm [--cached] <file>...`: Removes files from the index and optionally the working directory.
-*   `mygit commit -m <message>`: Creates a commit object capturing the state of the index, linking it to parent commits. Supports merge commits (multiple parents).
-*   `mygit status`: Shows the status of the working directory and staging area (untracked, modified, staged changes).
+```mermaid
+graph TD
+    A[Browser (User)] -- HTTP Requests --> B(Frontend - React SPA);
+    B -- API Calls /api/... --> C{Backend - Java Spring Boot};
+    C -- Executes command --> D[mygit C++ Executable];
+    D -- Reads/Writes --> E(Git Repository On Disk (.mygit));
+    C -- Parses stdout/stderr --> B;
+    B -- Renders UI --> A;
 
-**History & Inspection:**
-*   `mygit log [--graph]`: Displays the commit history. `--graph` outputs a DOT representation for visualization (e.g., using Graphviz).
-*   `mygit cat-file (-t | -s | -p) <object>`: Inspects Git objects (blob, tree, commit, tag) by type, size, or content.
-*   `mygit hash-object [-w] [-t <type>] <file>`: Computes object IDs (SHA-1) and optionally writes blob objects to the store.
-
-**Branching & Tagging:**
-*   `mygit branch`: Lists existing branches.
-*   `mygit branch <name> [<start_point>]`: Creates a new branch.
-*   `mygit tag`: Lists existing tags.
-*   `mygit tag [-a [-m <msg>]] <name> [<object>]`: Creates lightweight or annotated tags.
-
-**Index & Tree Manipulation:**
-*   `mygit write-tree`: Creates a tree object representing the current index state (supports subdirectories recursively).
-*   `mygit read-tree <tree-ish>`: Reads a tree object into the index (overwrite mode).
-
-**Merging (Basic):**
-*   `mygit merge <branch>`:
-    *   Detects and performs fast-forward merges (updates branch pointer, index, *and basic workdir update*).
-    *   Detects non-fast-forward merges but aborts (3-way merge logic is *not* implemented).
-*   `mygit checkout <branch|commit>`:
-    *   Switches `HEAD` to the specified branch or commit.
-    *   Updates the index and working directory to match the target commit's state (handles subdirectories).
-    *   Includes basic safety checks for uncommitted changes.
-
----
-
-## 💻 Tech Stack
-
-*   **Language:** C++17
-*   **Build System:** CMake (version 3.10+)
-*   **Libraries:**
-    *   OpenSSL (for SHA-1 hashing)
-    *   Zlib (for object compression/decompression)
-    *   Standard C++ Library (including `<filesystem>`)
-
----
-
-## 🚀 Getting Started
-
-### Prerequisites
-
-You'll need a C++17 compatible compiler (GCC 7+ or Clang 5+), CMake, and the development libraries for OpenSSL and Zlib.
-
-**On Debian/Ubuntu:**
-```bash
-sudo apt-get update
-sudo apt-get install build-essential cmake libssl-dev zlib1g-dev
+    style D fill:#f9f,stroke:#333,stroke-width:2px
+    style C fill:#bbf,stroke:#333,stroke-width:2px
+    style B fill:#9cf,stroke:#333,stroke-width:2px
 ```
 
-**On Fedora/CentOS/RHEL:**
-```bash
-sudo dnf update
-sudo dnf install gcc-c++ cmake openssl-devel zlib-devel
-```
+1.  **User** interacts with the **Frontend** React application in their browser.
+2.  **Frontend** makes API calls to the **Backend** (e.g., to list branches, view commits).
+3.  **Backend** receives the request, identifies the target repository, and constructs the appropriate `mygit` command (e.g., `mygit log --graph HEAD`).
+4.  **Backend** executes the compiled **`mygit` C++ program** as a separate process, passing necessary arguments and the repository path.
+5.  **`mygit`** performs the requested Git operation by directly interacting with the repository's `.mygit` directory on the filesystem (reading objects, updating refs, etc.).
+6.  **`mygit`** prints its output (e.g., commit list, SHA-1, file content) to standard output or errors to standard error.
+7.  **Backend** captures the output/errors from the `mygit` process.
+8.  **Backend** parses the raw text output into structured Java DTOs (Data Transfer Objects).
+9.  **Backend** sends the DTOs back to the **Frontend** as JSON responses.
+10. **Frontend** receives the JSON data and renders the user interface accordingly.
 
-**On macOS (using Homebrew):**
-```bash
-brew update
-brew install cmake openssl zlib pkg-config
-# Note: You might need to help CMake find Homebrew's OpenSSL
-# export PKG_CONFIG_PATH="/usr/local/opt/openssl@3/lib/pkgconfig" # Or relevant path
-```
+## Features
 
-### Building
+### `mygit` (C++ Core) Implemented Commands:
 
-1.  **Clone the repository:**
+*(See `mygitImplementation/README.md` for details)*
+
+| Command          | Description                                                                    | Status      |
+| :--------------- | :----------------------------------------------------------------------------- | :---------- |
+| `init`           | Create/reinitialize an empty repository (`.mygit` directory)                   | Implemented |
+| `add`            | Add file contents to the index (staging area)                                  | Implemented |
+| `rm`             | Remove files from the index and optionally working directory                   | Implemented |
+| `commit`         | Record changes (staged in the index) to the repository                       | Implemented |
+| `status`         | Show the working tree status (changes vs index vs HEAD)                        | Implemented |
+| `log`            | Show commit logs (linear history and `--graph` DOT output)                     | Implemented |
+| `branch`         | List and create branches                                                       | Implemented |
+| `checkout`       | Switch branches or restore working tree files (switch/detach HEAD)             | Implemented |
+| `tag`            | List and create lightweight/annotated tags                                     | Implemented |
+| `merge`          | Merge branches (fast-forward and basic 3-way merge with conflict detection)    | Implemented |
+| `write-tree`     | Create a tree object from the current index                                    | Implemented |
+| `read-tree`      | Read tree information into the index                                           | Implemented |
+| `cat-file`       | Inspect Git objects (type, size, content)                                      | Implemented |
+| `hash-object`    | Compute object ID and optionally create blob from file                         | Implemented |
+| `rev-parse`      | Resolve ref names (branch, tag, HEAD, SHA) to full SHA-1                       | Implemented |
+| `ls-tree`        | List the contents of a tree object                                             | Implemented |
+
+### Web Interface Features:
+
+*   List available local `mygit` repositories.
+*   View commit history (linear or graph view) for any branch/ref.
+*   Inspect details of individual commits (author, date, message, changes - *diff view pending*).
+*   Browse the file tree at any given commit/ref.
+*   View the content of individual files (blobs) at any commit/ref.
+*   List branches and tags with their corresponding commit SHAs.
+*   Basic object inspection (resolve refs, get object type/size).
+
+## Technology Stack
+
+| Component           | Technologies                                           |
+| :------------------ | :----------------------------------------------------- |
+| **Core Git Logic**  | C++ (C++17), CMake, zlib (for object compression)      |
+| **Backend API**     | Java (17+), Spring Boot 3.x, Maven, Jackson (JSON)     |
+| **Frontend UI**     | JavaScript, React 18.x, CSS, Fetch API (or Axios)      |
+| **Development**     | Git (ironically!), VS Code |
+
+## Setup and Running
+
+**(Note:** Ensure you have a C++ compiler (like g++ or clang), CMake, Java JDK (17+), Maven, and Node.js/npm installed.)
+
+1.  **Build the C++ `mygit` Executable:**
     ```bash
-    git clone https://github.com/Arsh-2811/Git-from-scratch-cpp.git
-    cd mygit
-    ```
-2.  **Create a build directory:**
-    ```bash
+    cd mygitImplementation
     cmake -S . -B build
-    ```
-    *   *(macOS Homebrew Note)* If CMake has trouble finding OpenSSL, you might need:
-        ```bash
-        cmake -S . -B build -DOPENSSL_ROOT_DIR=$(brew --prefix openssl@3)
-        ```
-3.  **Compile:**
-    ```bash
     cmake --build build
+    # The executable will be in mygitImplementation/build/src/mygit (or similar)
+    cd ..
     ```
-4.  **Executable:** The `mygit` executable will be located in the `build/` directory. You can run it from there (`./build/mygit`) or add it to your PATH.
+    *(See `mygitImplementation/README.md` for more details)*
 
-### Running
+2.  **Run the Backend API:**
+    *   **Crucially:** The backend needs to know where the `mygit` executable is and where your repositories are stored. This is configured in `backend/src/main/resources/application.properties`. Update these paths:
+        ```properties
+        # backend/src/main/resources/application.properties
+        mygit.executable.path=/path/to/your/Git-from-scratch-cpp/mygitImplementation/build/src/mygit
+        repository.base.path=/path/to/where/you/want/to/store/repos
+        ```
+    *   Run the Spring Boot application:
+        ```bash
+        cd backend
+        mvn spring-boot:run
+        # The API will typically be available at http://localhost:8080
+        cd ..
+        ```
 
-```bash
-# Navigate to a directory where you want to create a test repository
-mkdir my_test_project && cd my_test_project
+3.  **Run the Frontend UI:**
+    ```bash
+    cd frontend
+    npm install
+    npm start
+    # The UI will typically open automatically at http://localhost:3000
+    cd ..
+    ```
 
-# Initialize a MyGit repository
-../build/mygit init # Adjust path to executable if needed
+4.  **Usage:**
+    *   Open `http://localhost:3000` in your browser.
+    *   The UI will communicate with the backend API (`http://localhost:8080`).
+    *   You can create/clone repositories *manually* using the `mygit` executable within the `repository.base.path` you configured for the backend. The UI currently focuses on *viewing* existing repositories managed by `mygit`.
 
-# Create and add a file
-echo "Hello MyGit!" > hello.txt
-../build/mygit add hello.txt
+## Future Work / Roadmap
 
-# Check status
-../build/mygit status
+*   Implement `mygit diff` and display diffs in the UI.
+*   Implement `mygit clone`, `fetch`, `push` (much more complex, involves networking).
+*   Add repository creation/initialization via the API/UI.
+*   Implement staging/unstaging actions (`add`/`rm --cached`) in the UI.
+*   Implement committing changes via the UI.
+*   Improve merge conflict resolution visualization/handling.
+*   More robust error handling and reporting in the UI.
+*   Add user authentication/authorization (if needed).
+*   Refactor C++ code for better performance/maintainability.
+*   Add more comprehensive tests for both C++ and Java components.
 
-# Commit
-../build/mygit commit -m "Initial commit"
+## Contributing
 
-# See log
-../build/mygit log
-```
+Contributions are welcome! If you'd like to help improve the project, please feel free to fork the repository, make your changes, and submit a pull request. For major changes, please open an issue first to discuss.
 
----
+*(Add more specific contribution guidelines if desired)*
 
-## 🛠️ Usage Examples
+## License
 
-*(Assuming `mygit` is in your PATH or you use the relative path)*
-
-**Basic Workflow:**
-```sh
-mygit init
-echo "File content v1" > file.txt
-mkdir src
-echo "int main() {}" > src/main.cpp
-mygit status
-mygit add file.txt src/main.cpp
-mygit status
-mygit commit -m "Add initial files"
-echo "File content v2" >> file.txt
-mygit status
-mygit diff # (If/when implemented)
-mygit add file.txt
-mygit commit -m "Update file.txt"
-mygit log
-```
-
-**Branching:**
-```sh
-mygit branch                  # List branches
-mygit branch my-feature       # Create branch 'my-feature'
-mygit checkout my-feature     # Switch to 'my-feature'
-echo "New feature" > feature.txt
-mygit add feature.txt
-mygit commit -m "Add feature file"
-mygit checkout main           # Switch back to 'main'
-mygit log --graph             # View history with branches (use Graphviz)
-```
-
-**Tagging:**
-```sh
-mygit tag v1.0                # Create lightweight tag at current HEAD
-mygit tag v0.9 <commit_sha>   # Create lightweight tag on specific commit
-mygit tag -a -m "Release 1.1" v1.1 # Create annotated tag
-mygit tag                     # List tags
-```
-
-**Low-Level Inspection:**
-```sh
-# Get SHA of a file's content
-mygit hash-object file.txt
-
-# Get SHA and write blob object
-BLOB_SHA=$(mygit hash-object -w file.txt)
-
-# Inspect the blob
-mygit cat-file -t $BLOB_SHA  # Output: blob
-mygit cat-file -s $BLOB_SHA  # Output: <size>
-mygit cat-file -p $BLOB_SHA  # Output: <content of file.txt>
-
-# Write current index to a tree and get its SHA
-TREE_SHA=$(mygit write-tree)
-
-# Inspect the tree
-mygit cat-file -p $TREE_SHA
-```
-
----
-
-## 🚦 Current Status & Limitations
-
-*   ✅ Core object model (blobs, trees, commits, tags) implemented.
-*   ✅ Object storage (`.mygit/objects`) with Zlib compression.
-*   ✅ Index/Staging area (`.mygit/index`) implemented (simple text format).
-*   ✅ Ref management (`.mygit/HEAD`, `.mygit/refs/`) implemented.
-*   ✅ Most basic commands (`init`, `add`, `rm`, `commit`, `status`, `log`, `branch`, `tag`, `checkout`) are functional for single files and basic subdirectory structures.
-*   ✅ Recursive tree writing/reading supported.
-*   ✅ Basic workdir updates implemented for `checkout` and `read-tree -u`.
-*   ⚠️ Merge implementation only detects fast-forward or non-fast-forward scenarios. **True 3-way merging logic is missing.** Merging fails for non-FF cases.
-*   ❌ No `.gitignore` support.
-*   ❌ Performance optimizations (like index stat caching, packfiles) are not implemented. `status` might be slow on large repos.
-*   ❌ No networking (remotes, clone, fetch, push, pull).
-*   ❌ Limited error handling and user feedback compared to official Git.
-*   ❌ Complex history manipulation (rebase, cherry-pick, stash) not implemented.
-*   ❌ Diff output is not implemented (only status reporting).
-
----
-
-## 🗺️ Roadmap / Future Plans
-
--   [ ] **True 3-Way Merge:** Implement content-level merging and conflict handling.
--   [ ] **Diff Implementation:** Generate unified diff output for `mygit diff` and `mygit diff --staged`.
--   [ ] **`.gitignore`:** Add support for ignoring files.
--   [ ] **`reset` Command:** Implement `--soft`, `--mixed`, and `--hard` modes.
--   [ ] **`checkout <paths>`:** Allow restoring specific files.
--   [ ] **Index Performance:** Add stat data caching.
--   [ ] **Binary Index Format:** Switch to the optimized binary index.
--   [ ] **Subdirectory Handling:** Further robustness testing and potential optimizations for nested trees.
--   [ ] **Packfiles & GC:** Implement object packing and garbage collection.
--   [ ] **Remotes:** Add basic remote tracking, fetch, and maybe push.
--   [ ] **More Commands:** `rebase`, `stash`, `cherry-pick`, etc.
--   [ ] **Improved Error Handling & User Feedback.**
-
----
-
-## 🙏 Contributing
-
-This is primarily a learning project, but suggestions, bug reports, and discussions are welcome! If you'd like to contribute:
-
-1.  Fork the repository.
-2.  Create a new branch (`git checkout -b feature/your-feature`).
-3.  Make your changes.
-4.  Commit your changes (`git commit -m 'Add some feature'`).
-5.  Push to the branch (`git push origin feature/your-feature`).
-6.  Open a Pull Request.
-
-Please open an issue first to discuss significant changes.
-
----
-
-## 📜 License
-
-This project is licensed under the MIT License
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details (if you add one).

@@ -1,5 +1,6 @@
 package com.example.backend.controller;
 
+import java.io.IOException;
 import java.util.List;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -29,7 +30,7 @@ public class RepositoryController {
         try {
             List<String> repoNames = viewService.findAllRepositoryNames();
             return ResponseEntity.ok(repoNames);
-        } catch (Exception e) {
+        } catch (IOException e) {
             // Proper error handling recommended (e.g., using @ControllerAdvice)
             System.err.println("Error fetching repository list: " + e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
