@@ -1,0 +1,94 @@
+name: Build and Package for macOS
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    # Set up Java environment (matches your Java 21)
+    - name: Set up JDK 21
+      uses: actions/setup-java@v3
+      with:
+        java-version: 21
+        distribution: 'zulu'
+
+    # Set up Node.js (matches your v22.14.0)
+    - name: Set up Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: 22.14.0
+
+    # Install Maven (matches your 3.9.9)
+    - name: Install Maven
+      run: |
+        brew update
+        brew install maven@3.9.9
+        echo "$(brew --prefix maven@3.9.9)/bin" >> $GITHUB_PATH
+
+    # Install CMake (matches your 3.31.3)
+    - name: Install CMake
+      run: |
+        brew install cmake@3.31.3
+        echo "$(brew --prefix cmake@3.31.3)/bin" >> $GITHUB_PATH
+
+    # Build C++ components
+    - name: Build mygit CLI
+      run: |
+        cd mygitImplementation
+        cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        cmake --build build
+
+    # Build Java backend
+    - name: Build Spring Boot backend
+      run: |
+        cd backend
+        mvn clean package -DskipTests
+
+    # Build React frontend
+    - name: Build React frontend
+      run: |
+        cd frontend
+        npm install
+        npm run build
+
+    # Create distribution structure
+    - name: Create distribution package
+      run: |
+        mkdir -p dist/{backend,bin/macos,frontend/build}
+        
+        # Copy backend JAR
+        cp backend/target/backend-*.jar dist/backend/
+        
+        # Copy C++ executable
+        cp mygitImplementation/build/src/mygit dist/bin/macos/
+        chmod +x dist/bin/macos/mygit
+        
+        # Copy frontend build
+        cp -r frontend/build/* dist/frontend/build/
+        
+        # Copy launch script and make executable
+        cp launch.sh dist/
+        chmod +x dist/launch.sh
+        
+        # macOS specific permissions fix
+        xattr -d com.apple.quarantine dist/bin/macos/mygit
+
+    # Create ZIP archive
+    - name: Package artifacts
+      run: |
+        cd dist
+        zip -r Git-from-scratch-cpp-macos.zip .
+
+    # Upload artifact
+    - uses: actions/upload-artifact@v3
+      with:
+        name: Git-from-scratch-cpp-macos
+        path: dist/Git-from-scratch-cpp-macos.zip
