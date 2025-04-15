@@ -1,6 +1,8 @@
 # Git from Scratch++: A Deep Dive into Git Internals with C++ & Web UI
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) <!-- Optional: Choose a license -->
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CodeQL Advanced](https://github.com/Arsh-2811/Git-from-scratch-cpp/actions/workflows/codeql.yml/badge.svg)](https://github.com/Arsh-2811/Git-from-scratch-cpp/actions/workflows/codeql.yml)
+[![Node.js CI](https://github.com/Arsh-2811/Git-from-scratch-cpp/actions/workflows/node.js.yml/badge.svg)](https://github.com/Arsh-2811/Git-from-scratch-cpp/actions/workflows/node.js.yml)
 
 Welcome to **Git from Scratch++**! This project is an ambitious exploration into the core mechanics of the Git version control system. It features:
 
