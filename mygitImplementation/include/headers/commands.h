@@ -3,6 +3,7 @@
 
 #include <string>
 #include <vector>
+#include <optional>
 
 int handle_init();
 int handle_add(const std::vector<std::string>& files_to_add);

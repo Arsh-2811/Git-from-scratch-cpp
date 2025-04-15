@@ -6,6 +6,8 @@
 #include <stdexcept>
 #include <iostream>
 
+#include <algorithm>
+
 const std::string HEAD_PATH = GIT_DIR + "/HEAD";
 const std::string REFS_HEADS_DIR = REFS_DIR + "/heads";
 const std::string REFS_TAGS_DIR = REFS_DIR + "/tags";

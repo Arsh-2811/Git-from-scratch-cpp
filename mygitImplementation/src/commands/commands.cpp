@@ -14,6 +14,9 @@
 #include <map>
 #include <optional>
 
+#include <algorithm>
+#include <functional>
+
 enum class MergeStatus { Unmodified, Added, Deleted, Modified, Conflict };
 struct MergePathResult {
     MergeStatus status = MergeStatus::Unmodified;
@@ -1838,7 +1841,7 @@ int handle_cat_file(const std::string& operation, const std::string& sha1_prefix
                  for(const auto& entry : tree.entries) {
                      std::string type_str = (entry.mode == "40000") ? "tree" : "blob"; // Simple guess
                      // Need to read object type properly if needed
-                     printf("%06s %s %s\t%s\n", entry.mode.c_str(), type_str.c_str(), entry.sha1.c_str(), entry.name.c_str());
+                     printf("%6s %s %s\t%s\n", entry.mode.c_str(), type_str.c_str(), entry.sha1.c_str(), entry.name.c_str());
                  }
             } else if (object.type == "commit") {
                  // Re-format roughly like git cat-file -p commit
