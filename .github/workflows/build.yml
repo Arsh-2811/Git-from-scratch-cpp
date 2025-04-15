@@ -57,7 +57,8 @@ jobs:
         cp -r frontend/build/* dist/frontend/build/
         cp launch.sh dist/
         chmod +x dist/launch.sh
-        xattr -d com.apple.quarantine dist/bin/macos/mygit
+
+        xattr -d com.apple.quarantine dist/bin/macos/mygit || true
 
     - name: Package artifacts
       run: |
