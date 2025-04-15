@@ -1,6 +1,6 @@
 // src/pages/NotFoundPage.js
 import React from 'react';
-import { Container, Typography, Button, Box, Paper } from '@mui/material'; // Added Paper
+import { Container, Typography, Button, Paper } from '@mui/material'; // Added Paper
 import { Link as RouterLink } from 'react-router-dom';
 import Header from '../components/layout/Header';
 import PageTransition from '../components/common/PageTransition';

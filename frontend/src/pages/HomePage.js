@@ -1,7 +1,7 @@
 // src/pages/HomePage.js
 import React from 'react';
 import { Link as RouterLink } from 'react-router-dom';
-import { Container, Typography, Grid, Card, CardActionArea, CardContent, Box, Chip, Paper } from '@mui/material'; // Added Paper
+import { Container, Typography, Grid, Card, CardActionArea, CardContent, Box, Paper } from '@mui/material'; // Added Paper
 import { FaCodeBranch } from "react-icons/fa";
 import useFetchData from '../hooks/useFetchData';
 import { getAllRepositories } from '../api/repositoryApi';

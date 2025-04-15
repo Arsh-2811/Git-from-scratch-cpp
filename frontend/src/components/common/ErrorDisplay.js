@@ -1,6 +1,6 @@
 // src/components/common/ErrorDisplay.js
 import React from 'react';
-import { Alert, AlertTitle, Box, Typography } from '@mui/material';
+import { Alert, AlertTitle, Typography } from '@mui/material';
 import ReportProblemIcon from '@mui/icons-material/ReportProblem';
 
 function ErrorDisplay({ error, sx = {} }) { // Added sx prop

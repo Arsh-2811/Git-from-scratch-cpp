@@ -1,6 +1,6 @@
 // src/components/layout/Header.js
 import React from 'react';
-import { AppBar, Toolbar, Typography, Box, IconButton } from '@mui/material';
+import { AppBar, Toolbar, Typography, IconButton } from '@mui/material';
 import { Link as RouterLink } from 'react-router-dom';
 // import Logo from '../common/Logo'; // Use your logo component
 import { FaGithubAlt } from "react-icons/fa"; // Example icon

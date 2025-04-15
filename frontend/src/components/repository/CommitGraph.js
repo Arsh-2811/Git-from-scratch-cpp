@@ -8,7 +8,7 @@ import { transformGraphData } from '../../utils/helpers';
 import LoadingIndicator from '../common/LoadingIndicator';
 import ErrorDisplay from '../common/ErrorDisplay';
 import ReactFlow, {
-    MiniMap, Controls, Background, // Keep Background import if you want dots/color later
+    MiniMap, Controls,
     useNodesState, useEdgesState, MarkerType, Position, Handle
 } from 'reactflow';
 import 'reactflow/dist/style.css';

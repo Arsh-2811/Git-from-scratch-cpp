@@ -1,6 +1,6 @@
 // src/components/repository/RefSelector.js
 import React, { useState, useEffect } from 'react';
-import { Box, FormControl, InputLabel, Select, MenuItem, Chip, Typography, CircularProgress, Tooltip, Fade } from '@mui/material';
+import { Box, FormControl, InputLabel, Select, MenuItem, Chip, Typography, CircularProgress } from '@mui/material';
 import AccountTreeIcon from '@mui/icons-material/AccountTree';
 import LocalOfferIcon from '@mui/icons-material/LocalOffer';
 import CommitIcon from '@mui/icons-material/Commit'; // For specific commit indication

@@ -5,7 +5,6 @@ import { Link as RouterLink } from 'react-router-dom'; // For breadcrumbs
 import useFetchData from '../../hooks/useFetchData';
 import { getBlobContent } from '../../api/repositoryApi';
 import { getFileLanguage } from '../../utils/helpers';
-import LoadingIndicator from '../common/LoadingIndicator';
 import ErrorDisplay from '../common/ErrorDisplay';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { atomDark } from 'react-syntax-highlighter/dist/esm/styles/prism'; // Example: Different style
@@ -27,8 +26,8 @@ function FileViewer({ repoName, currentRef, filePath }) {
     // Breadcrumbs logic (similar to CodeBrowser)
      const pathSegments = filePath.split('/').filter(Boolean);
      const fileName = pathSegments.pop() || ''; // Get the filename
-     const directoryPath = pathSegments.join('/'); // Path to the directory
-     const encodedDirectoryPath = directoryPath.split('/').map(encodeURIComponent).join('/');
+    //  const directoryPath = pathSegments.join('/'); // Path to the directory
+    //  const encodedDirectoryPath = directoryPath.split('/').map(encodeURIComponent).join('/');
 
      const breadcrumbs = [
         <Link component={RouterLink} underline="hover" color="inherit" sx={{fontWeight: 500}} to={`/repo/${repoName}/tree?ref=${encodeURIComponent(currentRef)}`} key="root">

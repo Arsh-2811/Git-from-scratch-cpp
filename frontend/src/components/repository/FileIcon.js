@@ -2,7 +2,7 @@
 import React from 'react';
 import { FaFileCode, FaFileImage, FaFilePdf, FaFileArchive, FaFileAlt, FaFileCsv, FaFileWord, FaFileExcel } from 'react-icons/fa';
 import { DiJava, DiJavascript1, DiPython, DiHtml5, DiCss3Full, DiReact, DiMarkdown, DiGo, DiRuby } from 'react-icons/di'; // Added Go, Ruby
-import { SiCplusplus, SiC, H } from 'react-icons/si'; // Use Si for C/C++
+import { SiCplusplus, SiC } from 'react-icons/si'; // Use Si for C/C++
 import { Box } from '@mui/material';
 
 // Expanded mapping

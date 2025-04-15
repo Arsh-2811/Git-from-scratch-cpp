@@ -1,7 +1,7 @@
 // src/components/CommitDetailView.js
 import React, { useEffect } from 'react';
 import { useParams, Link as RouterLink, useNavigate } from 'react-router-dom';
-import { Typography, Box, Paper, Skeleton, Chip, Divider, Link, Button, Tooltip } from '@mui/material';
+import { Typography, Box, Paper, Chip, Divider, Link, Button, Tooltip } from '@mui/material';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import CodeIcon from '@mui/icons-material/Code';
 import useFetchData from '../hooks/useFetchData';

@@ -1,11 +1,11 @@
 // src/components/repository/CommitList.js
 import React, { useEffect } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
-import { Box, List, ListItem, ListItemText, Typography, Skeleton, Link, IconButton, Tooltip, Avatar, Fade, Paper } from '@mui/material';
+import { Box, List, ListItem, Typography, Skeleton, Link, IconButton, Tooltip, Avatar, Fade, Paper } from '@mui/material';
 import CodeIcon from '@mui/icons-material/Code';
 import useFetchData from '../../hooks/useFetchData';
 import { getCommits } from '../../api/repositoryApi';
-import { shortenSha, formatCommitDate } from '../../utils/helpers';
+import { shortenSha } from '../../utils/helpers';
 import ErrorDisplay from '../common/ErrorDisplay';
 import { formatDistanceToNowStrict } from 'date-fns'; // For relative time
 
