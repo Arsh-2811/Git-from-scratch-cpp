@@ -99,7 +99,7 @@ The project follows a clear separation of concerns, with interactions flowing as
 | **Core Git Logic**  | C++ (C++17), CMake, zlib (for object compression)      |
 | **Backend API**     | Java (17+), Spring Boot 3.x, Maven, Jackson (JSON)     |
 | **Frontend UI**     | JavaScript, React 18.x, CSS, Fetch API (or Axios)      |
-| **Development**     | Git (ironically!), VS Code / IntelliJ / CLion, Terminal |
+| **Development**     | Git (ironically!), VS Code                             |
 
 ## Setup and Running
 
